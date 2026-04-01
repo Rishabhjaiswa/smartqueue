@@ -1,0 +1,112 @@
+{
+    "name": "Fetch Reels Clean",
+    "nodes": [
+        {
+            "parameters": {},
+            "id": "1",
+            "name": "Manual Trigger",
+            "type": "n8n-nodes-base.manualTrigger",
+            "typeVersion": 1,
+            "position": [
+                200,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "functionCode": "return [{ json: { hashtag: 'viralreels' } }];"
+            },
+            "id": "2",
+            "name": "Set Hashtag",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [
+                400,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "url": "https://api.apify.com/v2/acts/instagram-scraper/run-sync-get-dataset-items",
+                "method": "POST",
+                "jsonParameters": true,
+                "queryParametersUi": {
+                    "parameter": [
+                        {
+                            "name": "token",
+                            "value": "YOUR_APIFY_TOKEN"
+                        }
+                    ]
+                },
+                "bodyParametersUi": {
+                    "parameter": [
+                        {
+                            "name": "hashtags",
+                            "value": "={{$json.hashtag}}"
+                        },
+                        {
+                            "name": "resultsLimit",
+                            "value": "5"
+                        }
+                    ]
+                }
+            },
+            "id": "3",
+            "name": "Fetch Reels",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 2,
+            "position": [
+                600,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "functionCode": "return items.map(item => ({ json: { reel_url: item.json.url } }));"
+            },
+            "id": "4",
+            "name": "Extract URLs",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [
+                800,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Manual Trigger": {
+            "main": [
+                [
+                    {
+                        "node": "Set Hashtag",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Set Hashtag": {
+            "main": [
+                [
+                    {
+                        "node": "Fetch Reels",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Fetch Reels": {
+            "main": [
+                [
+                    {
+                        "node": "Extract URLs",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    }
+}
