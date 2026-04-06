@@ -24,6 +24,7 @@ public class QueueService {
 
     private final TokenRepository tokenRepository;
     private final RedisTemplate<String, String> redisTemplate;
+    private final WebSocketBroadcastService broadcastService;
 
     private static final String QUEUE_KEY = "queue:";
     private static final long SENIOR_BONUS   = 600_000L;
@@ -58,6 +59,8 @@ public class QueueService {
 
         int position = getPositionInQueue(tokenNumber, request.getOfficeId());
         int waitMins = position * 5;
+        QueueStateDTO state = getQueueState(request.getOfficeId());
+        broadcastService.broadcastQueueState(request.getOfficeId(), state);
 
         return TokenResponse.builder()
                 .tokenNumber(tokenNumber)
@@ -90,6 +93,10 @@ public class QueueService {
                     tokenRepository.save(t);
                 });
 
+        QueueStateDTO state = getQueueState(officeId);
+        broadcastService.broadcastQueueState(officeId, state);
+        broadcastService.broadcastCurrentToken(officeId, tokenNumber);
+
         return TokenResponse.builder()
                 .tokenNumber(tokenNumber)
                 .status(TokenStatus.CALLED.name())
@@ -102,6 +109,8 @@ public class QueueService {
             t.setStatus(TokenStatus.COMPLETED);
             t.setCompletedAt(LocalDateTime.now());
             tokenRepository.save(t);
+            QueueStateDTO state = getQueueState(t.getOfficeId());
+            broadcastService.broadcastQueueState(t.getOfficeId(), state);
         });
     }
 
@@ -111,6 +120,8 @@ public class QueueService {
             redisTemplate.opsForZSet().remove(key, t.getTokenNumber());
             t.setStatus(TokenStatus.NO_SHOW);
             tokenRepository.save(t);
+            QueueStateDTO state = getQueueState(officeId);
+            broadcastService.broadcastQueueState(officeId, state);
         });
     }
 
