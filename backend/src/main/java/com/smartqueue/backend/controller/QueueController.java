@@ -4,9 +4,11 @@ import com.smartqueue.backend.dto.QueueStateDTO;
 import com.smartqueue.backend.dto.TokenRequest;
 import com.smartqueue.backend.dto.TokenResponse;
 import com.smartqueue.backend.service.QueueService;
+import com.smartqueue.backend.service.WebSocketBroadcastService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpSession;
 
 @RestController
 @RequestMapping("/api")
@@ -15,11 +17,19 @@ import org.springframework.web.bind.annotation.*;
 public class QueueController {
 
     private final QueueService queueService;
+    private final WebSocketBroadcastService broadcastService;
 
     @PostMapping("/token")
     public ResponseEntity<TokenResponse> generateToken(
-            @RequestBody TokenRequest request) {
-        return ResponseEntity.ok(queueService.generateToken(request));
+            @RequestBody TokenRequest request,
+            HttpSession session) {
+        TokenResponse response = queueService.generateToken(request);
+
+        broadcastService.sendPrivateTokenConfirmation(
+                session.getId(), response
+        );
+
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping("/queue/{officeId}")
