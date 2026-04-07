@@ -1,0 +1,24 @@
+# ========================
+# IDE files
+# ========================
+.idea/
+.vscode/
+*.iml
+
+# ========================
+# Backend (Spring Boot)
+# ========================
+backend/target/
+backend/.mvn/
+backend/src/main/resources/application.properties
+
+# ========================
+# Frontend (React)
+# ========================
+smartqueue-frontend/node_modules/
+smartqueue-frontend/build/
+
+# ========================
+# OS files
+# ========================
+.DS_Store
