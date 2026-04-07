@@ -25,3 +25,5 @@ export const markNoShow = (tokenId, officeId) =>
 export const staffOverride = (tokenNumber, officeId) =>
     api.post(`/staff/override?tokenNumber=${tokenNumber}&officeId=${officeId}`);
 
+export const sendChatMessage = (message, officeId) =>
+    api.post('/chat', { message, officeId });
