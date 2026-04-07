@@ -1,25 +1,34 @@
-import logo from './logo.svg';
-import './App.css';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import CitizenPage from './pages/CitizenPage';
+import BoardPage from './pages/BoardPage';
+import StaffPage from './pages/StaffPage';
 
-function App() {
+function NavBar() {
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
+    <nav style={{
+      background: '#fff', borderBottom: '1px solid #eee',
+      padding: '12px 24px', display: 'flex', gap: '24px',
+      alignItems: 'center'
+    }}>
+      <span style={{ fontWeight: '500', fontSize: '15px', color: '#111' }}>
+        SmartQueue
+      </span>
+      <Link to="/" style={{ color: '#555', textDecoration: 'none', fontSize: '14px' }}>Citizen</Link>
+      <Link to="/board" style={{ color: '#555', textDecoration: 'none', fontSize: '14px' }}>Display Board</Link>
+      <Link to="/staff" style={{ color: '#555', textDecoration: 'none', fontSize: '14px' }}>Staff</Link>
+    </nav>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <BrowserRouter>
+      <NavBar />
+      <Routes>
+        <Route path="/" element={<CitizenPage />} />
+        <Route path="/board" element={<BoardPage />} />
+        <Route path="/staff" element={<StaffPage />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
