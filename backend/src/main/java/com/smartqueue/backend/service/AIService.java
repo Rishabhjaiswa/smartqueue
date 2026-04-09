@@ -219,4 +219,7 @@ public class AIService {
                 .tokenData(tokenResponse)
                 .build();
     }
+    public com.smartqueue.backend.dto.QueueStateDTO getQueueStateForTelegram(int officeId) {
+        return queueService.getQueueState(officeId);
+    }
 }
