@@ -8,6 +8,8 @@ import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import java.time.LocalDateTime;
+import com.smartqueue.backend.entity.Patient;
+import com.smartqueue.backend.enums.VisitType;
 
 @Entity
 @Table(name = "tokens")
@@ -46,4 +48,27 @@ public class Token {
 
     @Column(name = "completed_at")
     private LocalDateTime completedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "patient_id")
+    private Patient patient;
+
+    @Column(name = "doctor_id")
+    private Long doctorId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "visit_type")
+    private VisitType visitType;
+
+    @Column(name = "severity_score")
+    private Integer severityScore = 0;
+
+    @Column(name = "dynamic_score")
+    private Long dynamicScore;
+
+    @Column(name = "actual_consultation_minutes")
+    private Integer actualConsultationMinutes;
+
+    @Column(name = "last_score_update")
+    private LocalDateTime lastScoreUpdate;
 }

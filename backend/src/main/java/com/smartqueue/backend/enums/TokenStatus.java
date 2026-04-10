@@ -4,5 +4,7 @@ public enum TokenStatus {
     WAITING,
     CALLED,
     COMPLETED,
-    NO_SHOW
+    NO_SHOW,
+    IN_CONSULTATION,
+    REFERRED
 }
