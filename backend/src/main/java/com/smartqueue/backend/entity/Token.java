@@ -23,6 +23,9 @@ public class Token {
     @Column(name = "token_number", nullable = false)
     private String tokenNumber;
 
+    @Column(name = "patient_name")
+    private String patientName;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "service_type", nullable = false)
     private ServiceType serviceType;
@@ -33,6 +36,9 @@ public class Token {
 
     @Column(name = "priority_score", nullable = false)
     private Long priorityScore;
+
+    @Column(name = "dynamic_score")
+    private Double dynamicScore;
 
     @Column(name = "doctor_id", nullable = false)
     private Long doctorId;

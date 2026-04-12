@@ -16,8 +16,6 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> {}) // IMPORTANT: enable CORS
                 .authorizeHttpRequests(auth -> auth
-
-                        // PUBLIC endpoints (keep these)
                         .requestMatchers(
                                 "/api/token",
                                 "/api/queue/**",
