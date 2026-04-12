@@ -23,6 +23,7 @@ public class QueueController {
     public ResponseEntity<TokenResponse> generateToken(
             @RequestBody TokenRequest request,
             HttpSession session) {
+
         TokenResponse response = queueService.generateToken(request);
 
         broadcastService.sendPrivateTokenConfirmation(
@@ -34,13 +35,15 @@ public class QueueController {
 
     @GetMapping("/queue/{officeId}")
     public ResponseEntity<QueueStateDTO> getQueueState(
-            @PathVariable Integer officeId) {
+            @PathVariable Long officeId) {
+
         return ResponseEntity.ok(queueService.getQueueState(officeId));
     }
 
     @PostMapping("/staff/next")
     public ResponseEntity<TokenResponse> callNext(
-            @RequestParam Integer officeId) {
+            @RequestParam Long officeId) {
+
         return ResponseEntity.ok(queueService.callNextToken(officeId));
     }
 
@@ -53,7 +56,8 @@ public class QueueController {
     @PostMapping("/staff/noshow/{tokenId}")
     public ResponseEntity<Void> noShow(
             @PathVariable Long tokenId,
-            @RequestParam Integer officeId) {
+            @RequestParam Long officeId) {
+
         queueService.markNoShow(tokenId, officeId);
         return ResponseEntity.ok().build();
     }
@@ -61,7 +65,8 @@ public class QueueController {
     @PostMapping("/staff/override")
     public ResponseEntity<Void> override(
             @RequestParam String tokenNumber,
-            @RequestParam Integer officeId) {
+            @RequestParam Long officeId) {
+
         queueService.staffOverride(tokenNumber, officeId);
         return ResponseEntity.ok().build();
     }

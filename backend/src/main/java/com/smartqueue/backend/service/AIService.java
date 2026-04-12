@@ -70,7 +70,7 @@ public class AIService {
     public ChatResponse processMessage(ChatRequest request) {
         int officeId = request.getOfficeId() != null ? request.getOfficeId() : 1;
 
-        var queueState = queueService.getQueueState(officeId);
+        var queueState = queueService.getQueueState((long)officeId);
         String context = String.format(
                 "Queue context: %d people waiting, ~%d min estimated wait. ",
                 queueState.getWaitingCount(),
@@ -128,7 +128,7 @@ public class AIService {
         TokenRequest tokenRequest = new TokenRequest();
         tokenRequest.setServiceType(serviceType);
         tokenRequest.setPriorityFlag(priorityFlag);
-        tokenRequest.setOfficeId(officeId);
+        tokenRequest.setDoctorId((long) officeId);
 
         TokenResponse tokenResponse = queueService.generateToken(tokenRequest);
 
@@ -207,7 +207,7 @@ public class AIService {
         TokenRequest tokenRequest = new TokenRequest();
         tokenRequest.setServiceType(serviceType);
         tokenRequest.setPriorityFlag(priorityFlag);
-        tokenRequest.setOfficeId(officeId);
+        tokenRequest.setDoctorId((long) officeId);
 
         TokenResponse tokenResponse = queueService.generateToken(tokenRequest);
 
@@ -220,6 +220,6 @@ public class AIService {
                 .build();
     }
     public com.smartqueue.backend.dto.QueueStateDTO getQueueStateForTelegram(int officeId) {
-        return queueService.getQueueState(officeId);
+        return queueService.getQueueState((long)officeId);
     }
 }

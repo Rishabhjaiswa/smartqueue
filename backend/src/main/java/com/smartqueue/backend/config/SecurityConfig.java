@@ -16,16 +16,29 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> {}) // IMPORTANT: enable CORS
                 .authorizeHttpRequests(auth -> auth
+
+                        // PUBLIC endpoints (keep these)
                         .requestMatchers(
-                                "/api/token", "/api/queue/**",
-                                        "/api/chat",
-                                        "/telegram/webhook",
-                                        "/ws/**", "/ws/info"
-                                ).permitAll()
-                        .anyRequest().permitAll()
-                );
+                                "/api/token",
+                                "/api/queue/**",
+                                "/api/chat",
+                                "/telegram/webhook",
+                                "/ws/**", "/ws/info"
+                        ).permitAll()
 
+                        // RECEPTIONIST APIs
+                        .requestMatchers("/api/reception/**").hasRole("RECEPTIONIST")
 
+                        // DOCTOR APIs
+                        .requestMatchers("/api/doctor/**").hasRole("DOCTOR")
+
+                        // ADMIN APIs
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+
+                        // everything else
+                        .anyRequest().authenticated()
+                )
+                .httpBasic(httpBasic -> {});
         return http.build();
     }
     @Bean
