@@ -2,11 +2,11 @@ package com.smartqueue.backend.entity;
 
 import com.smartqueue.backend.enums.ServiceType;
 import com.smartqueue.backend.enums.TokenStatus;
+import com.smartqueue.backend.enums.VisitType;
+
 import jakarta.persistence.*;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import lombok.AllArgsConstructor;
-import lombok.Builder;
+import lombok.*;
+
 import java.time.LocalDateTime;
 
 @Entity
@@ -46,4 +46,39 @@ public class Token {
 
     @Column(name = "completed_at")
     private LocalDateTime completedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "patient_id")
+    private Patient patient;
+
+    @Column(name = "doctor_id")
+    private Long doctorId;
+
+    @Column(name = "appointment_id")
+    private Long appointmentId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "visit_type", nullable = false)
+    private VisitType visitType = VisitType.WALK_IN;
+
+    @Column(name = "chief_complaint")
+    private String chiefComplaint;
+
+    @Column(name = "severity_score")
+    private Integer severityScore = 0;
+
+    @Column(name = "dynamic_score")
+    private Long dynamicScore;
+
+    @Column(name = "last_score_update")
+    private LocalDateTime lastScoreUpdate;
+
+    @Column(name = "consultation_start")
+    private LocalDateTime consultationStart;
+
+    @Column(name = "consultation_end")
+    private LocalDateTime consultationEnd;
+
+    @Column(name = "consult_duration_mins")
+    private Integer consultDurationMins;
 }
