@@ -25,10 +25,6 @@ public class QueueController {
             HttpSession session) {
         TokenResponse response = queueService.generateToken(request);
 
-        broadcastService.sendPrivateTokenConfirmation(
-                session.getId(), response
-        );
-
         return ResponseEntity.ok(response);
     }
 

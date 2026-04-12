@@ -1,10 +1,13 @@
 package com.smartqueue.backend.service;
 
-import com.smartqueue.backend.dto.QueueStateDTO;
-import com.smartqueue.backend.dto.TokenResponse;
+import com.smartqueue.backend.dto.DoctorQueueDTO;
+import com.smartqueue.backend.dto.ReceptionOverviewDTO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -12,35 +15,51 @@ public class WebSocketBroadcastService {
 
     private final SimpMessagingTemplate messagingTemplate;
 
-    public void broadcastQueueState(Integer officeId, QueueStateDTO state) {
+    // ✅ Doctor-specific queue
+    public void broadcastDoctorQueue(Long doctorId, DoctorQueueDTO dto) {
         messagingTemplate.convertAndSend(
-                "/topic/queue/" + officeId, state
+                "/topic/doctor/" + doctorId + "/queue",
+                dto
         );
-        messagingTemplate.convertAndSend(
-                "/topic/staff/" + officeId, state
-        );
+        System.out.println("Broadcasting doctor queue for doctor: "+doctorId);
     }
 
-    public void sendPrivateTokenConfirmation(
-            String sessionId, TokenResponse response) {
-        messagingTemplate.convertAndSendToUser(
-                sessionId,
-                "/queue/token-confirmation",
-                response
-        );
-    }
-
-    public void broadcastCurrentToken(Integer officeId, String tokenNumber) {
+    // ✅ Current token display
+    public void broadcastCurrentToken(Long doctorId, String tokenNumber) {
         messagingTemplate.convertAndSend(
-                "/topic/queue/" + officeId + "/current",
+                "/topic/doctor/" + doctorId + "/current",
                 tokenNumber
         );
     }
 
-    public void broadcastDoctorQueue(Long doctorId) {
+    // ✅ Reception dashboard
+    public void broadcastReceptionOverview(ReceptionOverviewDTO dto) {
         messagingTemplate.convertAndSend(
-                "/topic/doctor/" + doctorId + "/queue",
-                "update"
+                "/topic/reception/overview",
+                dto
+        );
+    }
+
+    // ✅ Patient notification
+    public void notifyPatient(Long patientId, String message) {
+        messagingTemplate.convertAndSendToUser(
+                patientId.toString(),
+                "/notification",
+                Map.of(
+                        "message", message,
+                        "timestamp", LocalDateTime.now().toString()
+                )
+        );
+    }
+
+    // ✅ Admin alerts
+    public void broadcastAdminAlert(String alert) {
+        messagingTemplate.convertAndSend(
+                "/topic/admin/system",
+                Map.of(
+                        "alert", alert,
+                        "time", LocalDateTime.now().toString()
+                )
         );
     }
 }

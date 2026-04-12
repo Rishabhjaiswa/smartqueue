@@ -4,6 +4,7 @@ import com.smartqueue.backend.dto.TokenResponse;
 import com.smartqueue.backend.entity.Token;
 import com.smartqueue.backend.enums.TokenStatus;
 import com.smartqueue.backend.repository.TokenRepository;
+import com.smartqueue.backend.dto.DoctorQueueDTO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.security.access.AccessDeniedException;
@@ -19,6 +20,8 @@ public class DoctorQueueService {
 
     private final RedisTemplate<String, String> redisTemplate;
     private final TokenRepository tokenRepository;
+    private final WebSocketBroadcastService broadcastService;
+    private final WaitTimeEstimator waitTimeEstimator;
 
     // ✅ CALL NEXT PATIENT
     public TokenResponse callNext(Long doctorId) {
@@ -58,6 +61,11 @@ public class DoctorQueueService {
 
         tokenRepository.save(token);
 
+        broadcastService.broadcastDoctorQueue(
+                doctorId,
+                buildDoctorQueueDTO(doctorId)
+        );
+
         return buildResponse(token);
     }
 
@@ -73,7 +81,13 @@ public class DoctorQueueService {
         token.setConsultationStart(LocalDateTime.now());
 
         tokenRepository.save(token);
+
+        broadcastService.broadcastDoctorQueue(
+                doctorId,
+                buildDoctorQueueDTO(doctorId)
+        );
     }
+
 
     // ✅ COMPLETE CONSULTATION
     public void completeConsultation(Long tokenId, Long doctorId) {
@@ -93,6 +107,26 @@ public class DoctorQueueService {
         token.setConsultDurationMins(duration);
 
         tokenRepository.save(token);
+
+        broadcastService.broadcastDoctorQueue(
+                doctorId,
+                buildDoctorQueueDTO(doctorId)
+        );
+    }
+
+    private DoctorQueueDTO buildDoctorQueueDTO(Long doctorId) {
+
+        // For now minimal safe implementation
+        return DoctorQueueDTO.builder()
+                .doctorId(doctorId)
+                .doctorName("Doctor " + doctorId)
+                .roomNumber("Room 1")
+                .currentToken("N/A")
+                .currentPatientName("N/A")
+                .waitingCount(0)
+                .estimatedWaitMinutes(0)
+                .nextTokens(java.util.List.of())
+                .build();
     }
 
     // 🔐 CRITICAL SECURITY METHOD

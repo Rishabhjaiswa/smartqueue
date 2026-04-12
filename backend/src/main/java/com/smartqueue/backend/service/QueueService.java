@@ -110,7 +110,7 @@ public class QueueService {
         int position = getPosition(token.getId(), doctor.getId());
         int waitMins = position * doctor.getAvgConsultMins();
 
-        broadcastService.broadcastDoctorQueue(doctor.getId());
+        //broadcastService.broadcastDoctorQueue(doctor.getId());
 
         return TokenResponse.builder()
                 .id(token.getId())
@@ -185,7 +185,7 @@ public class QueueService {
                 });
             }
 
-            broadcastService.broadcastDoctorQueue(doctor.getId());
+            //broadcastService.broadcastDoctorQueue(doctor.getId());
         }
     }
 

@@ -5,13 +5,22 @@ import lombok.Data;
 
 import java.util.List;
 
-@Data
-@Builder
+@Data @Builder
 public class DoctorQueueDTO {
-
     private Long doctorId;
+    private String doctorName;
+    private String roomNumber;
     private String currentToken;
+    private String currentPatientName;
     private int waitingCount;
+    private int estimatedWaitMinutes;
+    private List<QueueEntryDTO> nextTokens;
 
-    private List<String> nextTokens; // simple list for now
+    @Data @Builder
+    public static class QueueEntryDTO {
+        private String tokenNumber;
+        private String patientName;
+        private String visitType;
+        private int estimatedWaitMinutes;
+    }
 }

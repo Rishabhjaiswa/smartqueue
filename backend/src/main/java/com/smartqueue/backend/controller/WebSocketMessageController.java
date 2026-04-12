@@ -18,6 +18,5 @@ public class WebSocketMessageController {
     @MessageMapping("/queue.subscribe/{officeId}")
     public void onSubscribe(@DestinationVariable Integer officeId) {
         QueueStateDTO state = queueService.getQueueState((long)officeId);
-        broadcastService.broadcastQueueState(officeId, state);
     }
 }
