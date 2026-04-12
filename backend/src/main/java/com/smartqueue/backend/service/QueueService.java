@@ -3,104 +3,45 @@ package com.smartqueue.backend.service;
 import com.smartqueue.backend.dto.QueueStateDTO;
 import com.smartqueue.backend.dto.TokenRequest;
 import com.smartqueue.backend.dto.TokenResponse;
+import com.smartqueue.backend.entity.Doctor;
+import com.smartqueue.backend.entity.Patient;
 import com.smartqueue.backend.entity.Token;
-import com.smartqueue.backend.enums.PriorityFlag;
 import com.smartqueue.backend.enums.TokenStatus;
+import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.TokenRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
 public class QueueService {
 
     private final TokenRepository tokenRepository;
+    private final DoctorRepository doctorRepository;
     private final RedisTemplate<String, String> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
+    private final PriorityEngine priorityEngine;
 
-    private static final String QUEUE_KEY = "queue:";
-    private static final long SENIOR_BONUS   = 600_000L;
-    private static final long EMERGENCY_BONUS = 1_800_000L;
-
+    private static final String QUEUE_KEY = "queue:doctor:";
     public TokenResponse generateToken(TokenRequest request) {
-        long score = System.currentTimeMillis();
 
-        if (request.getPriorityFlag() == PriorityFlag.SENIOR) {
-            score -= SENIOR_BONUS;
-        } else if (request.getPriorityFlag() == PriorityFlag.EMERGENCY) {
-            score -= EMERGENCY_BONUS;
-        }
-
-        long waiting = tokenRepository
-                .countByOfficeIdAndStatus(request.getOfficeId(), TokenStatus.WAITING);
-        String tokenNumber = "T" + String.format("%03d", waiting + 1);
-
-        Token token = Token.builder()
-                .tokenNumber(tokenNumber)
-                .serviceType(request.getServiceType())
-                .status(TokenStatus.WAITING)
-                .priorityScore(score)
-                .officeId(request.getOfficeId())
-                .createdAt(LocalDateTime.now())
+        // temporary dummy patient (until full Patient system ready)
+        Patient dummyPatient = Patient.builder()
+                .name("Walk-in")
+                .age(30)
                 .build();
 
-        persistTokenAsync(token);
-
-        String key = QUEUE_KEY + request.getOfficeId();
-        redisTemplate.opsForZSet().add(key, tokenNumber, score);
-
-        int position = getPositionInQueue(tokenNumber, request.getOfficeId());
-        int waitMins = position * 5;
-        QueueStateDTO state = getQueueState(request.getOfficeId());
-        broadcastService.broadcastQueueState(request.getOfficeId(), state);
-
-        return TokenResponse.builder()
-                .tokenNumber(tokenNumber)
-                .serviceType(request.getServiceType().name())
-                .status(TokenStatus.WAITING.name())
-                .positionInQueue(position)
-                .estimatedWaitMinutes(waitMins)
-                .message("Token generated. Please wait for your number.")
-                .build();
+        return generateToken(request, dummyPatient);
     }
 
     public TokenResponse callNextToken(Integer officeId) {
-        String key = QUEUE_KEY + officeId;
-        Set<String> next = redisTemplate.opsForZSet().range(key, 0, 0);
-
-        if (next == null || next.isEmpty()) {
-            return TokenResponse.builder()
-                    .message("No tokens in queue.")
-                    .build();
-        }
-
-        String tokenNumber = next.iterator().next();
-        redisTemplate.opsForZSet().remove(key, tokenNumber);
-
-        tokenRepository
-                .findTopByOfficeIdAndStatusOrderByPriorityScoreAsc(officeId, TokenStatus.WAITING)
-                .ifPresent(t -> {
-                    t.setStatus(TokenStatus.CALLED);
-                    t.setCalledAt(LocalDateTime.now());
-                    tokenRepository.save(t);
-                });
-
-        QueueStateDTO state = getQueueState(officeId);
-        broadcastService.broadcastQueueState(officeId, state);
-        broadcastService.broadcastCurrentToken(officeId, tokenNumber);
-
         return TokenResponse.builder()
-                .tokenNumber(tokenNumber)
-                .status(TokenStatus.CALLED.name())
-                .message("Now serving: " + tokenNumber)
+                .message("Deprecated - use doctor-based flow")
                 .build();
     }
 
@@ -109,61 +50,156 @@ public class QueueService {
             t.setStatus(TokenStatus.COMPLETED);
             t.setCompletedAt(LocalDateTime.now());
             tokenRepository.save(t);
-            QueueStateDTO state = getQueueState(t.getOfficeId());
-            broadcastService.broadcastQueueState(t.getOfficeId(), state);
         });
     }
 
     public void markNoShow(Long tokenId, Integer officeId) {
-        String key = QUEUE_KEY + officeId;
         tokenRepository.findById(tokenId).ifPresent(t -> {
-            redisTemplate.opsForZSet().remove(key, t.getTokenNumber());
             t.setStatus(TokenStatus.NO_SHOW);
             tokenRepository.save(t);
-            QueueStateDTO state = getQueueState(officeId);
-            broadcastService.broadcastQueueState(officeId, state);
         });
     }
 
     public void staffOverride(String tokenNumber, Integer officeId) {
-        String key = QUEUE_KEY + officeId;
-        redisTemplate.opsForZSet().add(key, tokenNumber, Long.MIN_VALUE);
+        // no-op for now
     }
 
-    public QueueStateDTO getQueueState(Integer officeId) {
-        String key = QUEUE_KEY + officeId;
+    public TokenResponse generateToken(TokenRequest request, Patient patient) {
 
-        Set<String> allInQueue = redisTemplate.opsForZSet()
-                .range(key, 0, -1);
+        Doctor doctor = assignDoctor(request);
 
-        String currentToken = "";
-        List<String> nextTokens = List.of();
+        int queueSize = Optional.ofNullable(
+                redisTemplate.opsForZSet().size(QUEUE_KEY + doctor.getId())
+        ).map(Long::intValue).orElse(0);
 
-        if (allInQueue != null && !allInQueue.isEmpty()) {
-            List<String> list = allInQueue.stream().collect(Collectors.toList());
-            currentToken = list.get(0);
-            nextTokens = list.subList(1, Math.min(4, list.size()));
-        }
+        Token token = Token.builder()
+                .doctorId(doctor.getId())
+                .tokenNumber(generateNumber(doctor.getId()))
+                .serviceType(request.getServiceType())
+                .visitType(
+                request.getVisitType() != null
+                        ? request.getVisitType()
+                        : com.smartqueue.backend.enums.VisitType.WALK_IN
+        )
+                .chiefComplaint(request.getChiefComplaint())
+                .severityScore(
+                        request.getSeverityScore() != null
+                                ? request.getSeverityScore()
+                                : 0
+                )
+                .appointmentScheduledTime(request.getAppointmentScheduledTime())
+                .status(TokenStatus.WAITING)
+                .officeId(request.getOfficeId())
+                .createdAt(LocalDateTime.now())
+                .build();
 
-        long waitingCount = allInQueue != null ? allInQueue.size() : 0;
+        long score = priorityEngine.computeScore(token, queueSize);
 
-        return QueueStateDTO.builder()
-                .officeId(officeId)
-                .currentToken(currentToken)
-                .waitingCount((int) waitingCount)
-                .avgWaitMinutes((int) waitingCount * 5)
-                .nextTokens(nextTokens)
+        token.setPriorityScore(score);
+        token.setDynamicScore(score);
+        token.setLastScoreUpdate(LocalDateTime.now());
+
+        tokenRepository.save(token);
+
+        redisTemplate.opsForZSet().add(
+                QUEUE_KEY + doctor.getId(),
+                token.getId().toString(),
+                score
+        );
+
+        int position = getPosition(token.getId(), doctor.getId());
+        int waitMins = position * doctor.getAvgConsultMins();
+
+        broadcastService.broadcastDoctorQueue(doctor.getId());
+
+        return TokenResponse.builder()
+                .id(token.getId())
+                .tokenNumber(token.getTokenNumber())
+                .serviceType(token.getServiceType().name())
+                .status(token.getStatus().name())
+                .doctorName(doctor.getName())
+                .roomNumber(doctor.getRoomNumber())
+                .positionInQueue(position)
+                .estimatedWaitMinutes(waitMins)
                 .build();
     }
 
-    private int getPositionInQueue(String tokenNumber, Integer officeId) {
-        String key = QUEUE_KEY + officeId;
-        Long rank = redisTemplate.opsForZSet().rank(key, tokenNumber);
+    private Doctor assignDoctor(TokenRequest request) {
+
+        if (request.getDoctorId() != null) {
+            return doctorRepository.findById(request.getDoctorId())
+                    .orElseThrow(() -> new RuntimeException("Doctor not found"));
+        }
+
+        List<Doctor> available = doctorRepository.findByAvailableTrue();
+
+        return available.stream()
+                .min(Comparator.comparingLong(d ->
+                        Optional.ofNullable(
+                                redisTemplate.opsForZSet()
+                                        .size(QUEUE_KEY + d.getId())
+                        ).orElse(0L)
+                ))
+                .orElseThrow(() -> new RuntimeException("No doctors available"));
+    }
+
+    private int getPosition(Long tokenId, Long doctorId) {
+
+        Long rank = redisTemplate.opsForZSet()
+                .rank(QUEUE_KEY + doctorId, tokenId.toString());
+
         return rank != null ? rank.intValue() + 1 : 1;
     }
 
-    @Async
-    public void persistTokenAsync(Token token) {
-        tokenRepository.save(token);
+    private String generateNumber(Long doctorId) {
+        long count = tokenRepository.count();
+        return "D" + doctorId + "-T" + (count + 1);
+    }
+
+    @Scheduled(fixedRateString = "${clinic.priority-recalc-interval-seconds:60}000")
+    public void recalculateAllScores() {
+
+        List<Doctor> activeDoctors = doctorRepository.findByAvailableTrue();
+
+        for (Doctor doctor : activeDoctors) {
+
+            String key = QUEUE_KEY + doctor.getId();
+
+            Set<String> ids = redisTemplate.opsForZSet().range(key, 0, -1);
+            if (ids == null) continue;
+
+            int queueSize = ids.size();
+
+            for (String idStr : ids) {
+
+                tokenRepository.findById(Long.parseLong(idStr)).ifPresent(token -> {
+
+                    long newScore = priorityEngine.computeScore(token, queueSize);
+
+                    redisTemplate.opsForZSet().add(key, idStr, newScore);
+
+                    token.setDynamicScore(newScore);
+                    token.setLastScoreUpdate(LocalDateTime.now());
+
+                    tokenRepository.save(token);
+                });
+            }
+
+            broadcastService.broadcastDoctorQueue(doctor.getId());
+        }
+    }
+
+    public QueueStateDTO getQueueState(Long doctorId) {
+
+        String key = QUEUE_KEY + doctorId;
+
+        Set<String> all = redisTemplate.opsForZSet().range(key, 0, -1);
+
+        int waitingCount = all != null ? all.size() : 0;
+
+        return QueueStateDTO.builder()
+                .waitingCount(waitingCount)
+                .avgWaitMinutes(waitingCount * 10)
+                .build();
     }
 }

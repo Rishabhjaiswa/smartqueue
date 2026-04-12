@@ -35,7 +35,7 @@ public class QueueController {
     @GetMapping("/queue/{officeId}")
     public ResponseEntity<QueueStateDTO> getQueueState(
             @PathVariable Integer officeId) {
-        return ResponseEntity.ok(queueService.getQueueState(officeId));
+        return ResponseEntity.ok(queueService.getQueueState((long)officeId));
     }
 
     @PostMapping("/staff/next")

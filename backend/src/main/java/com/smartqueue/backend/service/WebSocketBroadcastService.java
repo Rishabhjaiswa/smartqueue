@@ -36,4 +36,11 @@ public class WebSocketBroadcastService {
                 tokenNumber
         );
     }
+
+    public void broadcastDoctorQueue(Long doctorId) {
+        messagingTemplate.convertAndSend(
+                "/topic/doctor/" + doctorId + "/queue",
+                "update"
+        );
+    }
 }

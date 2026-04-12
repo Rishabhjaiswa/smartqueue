@@ -13,4 +13,6 @@ public class TokenResponse {
     private int positionInQueue;
     private int estimatedWaitMinutes;
     private String message;
+    private String doctorName;
+    private String roomNumber;
 }

@@ -81,4 +81,7 @@ public class Token {
 
     @Column(name = "consult_duration_mins")
     private Integer consultDurationMins;
+
+    @Column(name = "appointment_scheduled_time")
+    private LocalDateTime appointmentScheduledTime;
 }
