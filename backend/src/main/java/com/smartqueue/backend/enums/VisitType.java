@@ -4,5 +4,6 @@ public enum VisitType {
     WALK_IN,
     APPOINTMENT,
     EMERGENCY,
-    REFERRAL
+    REFERRAL,
+    FOLLOW_UP
 }

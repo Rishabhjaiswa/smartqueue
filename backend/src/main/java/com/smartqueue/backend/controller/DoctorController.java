@@ -53,4 +53,15 @@ public class DoctorController {
 
         return ResponseEntity.ok().build();
     }
+
+    @PutMapping("/availability")
+    public ResponseEntity<Void> toggleAvailability(
+            @RequestParam boolean available,
+            @AuthenticationPrincipal UserDetails user) {
+
+        Long doctorId = staffUserService.getDoctorId(user.getUsername());
+        doctorQueueService.setAvailability(doctorId, available);
+
+        return ResponseEntity.ok().build();
+    }
 }

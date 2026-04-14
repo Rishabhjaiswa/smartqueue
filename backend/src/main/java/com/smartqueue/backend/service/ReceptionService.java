@@ -30,7 +30,8 @@ public class ReceptionService {
 
     public ReceptionOverviewDTO getOverview() {
         return ReceptionOverviewDTO.builder()
-                .totalWaiting(0)
+                .totalDoctorsActive(0)
+                .totalPatientsWaiting(0)
                 .totalDoctorsActive(0)
                 .build();
     }

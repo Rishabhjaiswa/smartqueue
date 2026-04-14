@@ -17,11 +17,11 @@ public class WebSocketBroadcastService {
 
     // ✅ Doctor-specific queue
     public void broadcastDoctorQueue(Long doctorId, DoctorQueueDTO dto) {
+
         messagingTemplate.convertAndSend(
-                "/topic/doctor/" + doctorId + "/queue",
+                "/topic/doctor/" + doctorId,
                 dto
         );
-        System.out.println("Broadcasting doctor queue for doctor: "+doctorId);
     }
 
     // ✅ Current token display

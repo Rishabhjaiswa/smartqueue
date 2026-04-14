@@ -6,6 +6,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
+
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,6 +24,11 @@ public interface TokenRepository extends JpaRepository<Token, Long> {
             Integer officeId, TokenStatus status
     );
 
+    List<Token> findByStatusAndCalledAtBefore(
+            TokenStatus status,
+            LocalDateTime time
+    );
+
     @Query(value = """
     SELECT t.consult_duration_mins
     FROM tokens t
@@ -34,6 +41,11 @@ public interface TokenRepository extends JpaRepository<Token, Long> {
     List<Integer> findRecentConsultDurations(
             @Param("doctorId") Long doctorId,
             @Param("limit") int limit
+    );
+
+    Optional<Token> findTopByDoctorIdAndStatusOrderByCalledAtDesc(
+            Long doctorId,
+            TokenStatus status
     );
 }
 

@@ -11,9 +11,8 @@ import java.time.ZoneOffset;
 public class PriorityEngine {
 
     public long computeScore(Token token, int doctorQueueSize) {
-        long baseMs = token.getCreatedAt()
+        long score = token.getCreatedAt()
                 .toInstant(ZoneOffset.UTC).toEpochMilli();
-        long score = baseMs;
 
         int age = (token.getPatient() != null && token.getPatient().getAge() != null)
                 ? token.getPatient().getAge()
@@ -23,16 +22,22 @@ public class PriorityEngine {
 
         long waitMins = Duration.between(
                 token.getCreatedAt(), LocalDateTime.now()).toMinutes();
-        score -= (long)(waitMins * 60_000L * starvationMultiplier(waitMins));
+        long waitPenalty = (long)(waitMins * 60_000L * starvationMultiplier(waitMins));
+        waitPenalty = Math.min(waitPenalty, 3_600_000L); // cap
+        score -= waitPenalty;
 
         if (token.getVisitType() == VisitType.APPOINTMENT
-                && token.getAppointmentId() != null) {
+                && token.getAppointmentScheduledTime() != null) {
             score -= appointmentUrgencyBonus(token);
         }
 
-        score -= (long)(token.getSeverityScore() * 12_000L);
+        if (token.getVisitType() == VisitType.FOLLOW_UP) {
+            score -= 600_000L;
+        }
 
-        score += (long)(doctorQueueSize * 3_000L);
+        score -= (token.getSeverityScore() * 120_000L);
+
+        score += (doctorQueueSize * 60_000L);
 
         return score;
     }
