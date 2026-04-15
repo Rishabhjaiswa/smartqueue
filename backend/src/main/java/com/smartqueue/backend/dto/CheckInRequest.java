@@ -1,10 +1,15 @@
 package com.smartqueue.backend.dto;
 
+import com.smartqueue.backend.enums.ServiceType;
 import lombok.Data;
 
 @Data
 public class CheckInRequest {
-    private Long patientId;
-    private Long doctorId;
-    private String visitType; // WALK_IN / EMERGENCY etc.
+
+    private String patientName;
+    private Integer age;
+
+    private ServiceType serviceType;
+    private Integer severityScore;
+    private Integer officeId;
 }

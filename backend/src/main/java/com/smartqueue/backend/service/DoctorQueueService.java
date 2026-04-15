@@ -248,26 +248,39 @@ public class DoctorQueueService {
                 .build();
     }
 
-    private ReceptionOverviewDTO buildReceptionOverview() {
+    public ReceptionOverviewDTO buildReceptionOverview() {
 
-        // TEMP: assume 1 doctor for now
-        Long doctorId = 1L;
+        List<Doctor> doctors = doctorRepository.findByAvailableTrue();
 
-        DoctorQueueDTO queue = buildDoctorQueueDTO(doctorId);
+        List<ReceptionOverviewDTO.DoctorSummary> summaries = new ArrayList<>();
 
-        ReceptionOverviewDTO.DoctorSummary summary =
-                ReceptionOverviewDTO.DoctorSummary.builder()
-                        .doctorId(doctorId)
-                        .doctorName(queue.getDoctorName())
-                        .currentToken(queue.getCurrentToken())
-                        .waitingCount(queue.getWaitingCount())
-                        .avgConsultTime(5) // fallback for now
-                        .build();
+        int totalWaiting = 0;
+
+        for (Doctor doctor : doctors) {
+
+            DoctorQueueDTO queue = buildDoctorQueueDTO(doctor.getId());
+
+            summaries.add(
+                    ReceptionOverviewDTO.DoctorSummary.builder()
+                            .doctorId(doctor.getId())
+                            .doctorName(doctor.getName())
+                            .currentToken(queue.getCurrentToken())
+                            .waitingCount(queue.getWaitingCount())
+                            .avgConsultTime(
+                                    doctor.getAvgConsultMins() != null
+                                            ? doctor.getAvgConsultMins()
+                                            : 10
+                            )
+                            .build()
+            );
+
+            totalWaiting += queue.getWaitingCount();
+        }
 
         return ReceptionOverviewDTO.builder()
-                .totalDoctorsActive(1)
-                .totalPatientsWaiting(queue.getWaitingCount())
-                .doctors(java.util.List.of(summary))
+                .totalDoctorsActive(doctors.size())
+                .totalPatientsWaiting(totalWaiting)
+                .doctors(summaries)
                 .build();
     }
 
@@ -284,7 +297,10 @@ public class DoctorQueueService {
         List<Doctor> doctors = doctorRepository.findByAvailableTrue();
 
         for (Doctor doctor : doctors) {
-            broadcastService.broadcastDoctorQueue(doctor.getId(),null);
+            broadcastService.broadcastDoctorQueue(
+                    doctor.getId(),
+                    buildDoctorQueueDTO(doctor.getId())
+            );
         }
     }
 

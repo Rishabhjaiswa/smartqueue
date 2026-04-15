@@ -11,8 +11,10 @@ import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.TokenRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -62,12 +64,32 @@ public class QueueService {
     }
 
     public void markNoShow(Long tokenId, Integer officeId) {
-        tokenRepository.findById(tokenId).ifPresent(t -> {
-            t.setStatus(TokenStatus.NO_SHOW);
-            tokenRepository.save(t);
 
-            broadcastService.broadcastDoctorQueue(t.getDoctorId(),null);
-        });
+        Token token = tokenRepository.findById(tokenId)
+                .orElseThrow(() -> new RuntimeException("Token not found"));
+
+        // ✅ Prevent invalid state
+        if (token.getStatus() != TokenStatus.WAITING) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Only WAITING tokens can be marked NO_SHOW"
+            );
+        }
+
+        token.setStatus(TokenStatus.NO_SHOW);
+        tokenRepository.save(token);
+
+        // ✅ Remove from Redis safely
+        redisTemplate.opsForZSet().remove(
+                "queue:doctor:" + token.getDoctorId(),
+                tokenId.toString()
+        );
+
+        // ✅ Safe broadcast
+        broadcastService.broadcastDoctorQueue(
+                token.getDoctorId(),
+                doctorQueueService.buildDoctorQueueDTO(token.getDoctorId())// or call service
+        );
     }
 
     public void staffOverride(String tokenNumber, Integer officeId) {
