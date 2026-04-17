@@ -24,7 +24,8 @@ public class TelegramWebhookInitializer {
             log.warn("Telegram webhook URL not configured — skipping registration");
             return;
         }
-        log.info("Registering Telegram webhook at: {}", webhookBaseUrl);
-        telegramService.registerWebhook(webhookBaseUrl);
+        String normalizedWebhookBaseUrl = webhookBaseUrl.trim();
+        log.info("Registering Telegram webhook at: {}", normalizedWebhookBaseUrl);
+        telegramService.registerWebhook(normalizedWebhookBaseUrl);
     }
 }

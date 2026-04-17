@@ -25,8 +25,9 @@ public class TelegramService {
 
         Map<String, Object> body = new HashMap<>();
         body.put("chat_id", chatId);
-        body.put("text", text);
+        body.put("text", text == null || text.isBlank() ? "Please try again." : text);
         body.put("parse_mode", "HTML");
+        body.put("disable_web_page_preview", true);
 
         try {
             restTemplate.postForObject(url, body, String.class);
@@ -50,7 +51,7 @@ public class TelegramService {
 
     public void registerWebhook(String webhookBaseUrl) {
         String url = TELEGRAM_API + botToken + "/setWebhook";
-        String webhookUrl = webhookBaseUrl + "/telegram/webhook";
+        String webhookUrl = webhookBaseUrl.replaceAll("/+$", "") + "/telegram/webhook";
 
         Map<String, String> body = new HashMap<>();
         body.put("url", webhookUrl);

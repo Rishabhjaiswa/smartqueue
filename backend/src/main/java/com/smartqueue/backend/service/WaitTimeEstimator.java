@@ -26,6 +26,12 @@ public class WaitTimeEstimator {
         return position * avgMins;
     }
 
+    public int estimateAverageConsultMinutes(Long doctorId) {
+        Doctor doctor = doctorRepository.findById(doctorId)
+                .orElseThrow(() -> new RuntimeException("Doctor not found"));
+        return computeRollingAvg(doctorId, doctor.getAvgConsultMins());
+    }
+
     // ✅ Rolling average of last consultations
     private int computeRollingAvg(Long doctorId, int fallbackMins) {
 

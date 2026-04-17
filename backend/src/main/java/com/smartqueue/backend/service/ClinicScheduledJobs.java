@@ -39,7 +39,7 @@ public class ClinicScheduledJobs {
         for (Token token : expired) {
 
             // 1. Update status
-            token.setStatus(TokenStatus.NO_SHOW);
+            token.setStatus(TokenStatus.EXPIRED);
             tokenRepository.save(token);
 
             // 2. Remove from Redis queue

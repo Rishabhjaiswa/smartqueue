@@ -1,23 +1,31 @@
 package com.smartqueue.backend.service;
 
 import com.smartqueue.backend.dto.*;
+import com.smartqueue.backend.entity.Doctor;
 import com.smartqueue.backend.entity.Patient;
 import com.smartqueue.backend.entity.Token;
+import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.TokenRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import com.smartqueue.backend.enums.TokenStatus;
 
+import java.util.List;
+
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ReceptionService {
 
     private final QueueService queueService;
     private final DoctorQueueService doctorQueueService;
     private final TokenRepository tokenRepository;
+    private final DoctorRepository doctorRepository;
     private final RedisTemplate<String, String> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
+    private final AuditLogService auditLogService;
 
     // ✅ REAL WALK-IN WITH PATIENT
     public TokenResponse checkInWalkIn(CheckInRequest req) {
@@ -31,7 +39,9 @@ public class ReceptionService {
         tokenRequest.setServiceType(req.getServiceType());
         tokenRequest.setSeverityScore(req.getSeverityScore());
         tokenRequest.setOfficeId(req.getOfficeId());
-
+        tokenRequest.setVisitType(
+                com.smartqueue.backend.enums.VisitType.WALK_IN
+        );
         return queueService.generateToken(tokenRequest, patient);
     }
     public TokenResponse bookAppointment(AppointmentRequest req) {
@@ -67,19 +77,39 @@ public class ReceptionService {
     }
 
     public void reassignDoctor(Long tokenId, Long newDoctorId) {
+        if (newDoctorId == null) {
+            throw new IllegalArgumentException("Please select a doctor for reassignment");
+        }
 
         Token token = tokenRepository.findById(tokenId)
                 .orElseThrow(() -> new RuntimeException("Token not found"));
 
         Long oldDoctorId = token.getDoctorId();
+        Doctor newDoctor = doctorRepository.findById(newDoctorId)
+                .orElseThrow(() -> new RuntimeException("Doctor not found"));
+
+        if (oldDoctorId == null || newDoctorId == null) {
+            throw new RuntimeException("Doctor assignment is required");
+        }
+        if (!newDoctor.isAvailable()) {
+            throw new RuntimeException("Selected doctor is unavailable");
+        }
+        Long newQueueSize = redisTemplate.opsForZSet().zCard("queue:doctor:" + newDoctorId);
+        if (newDoctor.getMaxQueueSize() != null && newQueueSize != null && newQueueSize >= newDoctor.getMaxQueueSize()) {
+            throw new RuntimeException("Selected doctor queue is full");
+        }
 
         // ❌ Prevent same doctor reassignment
         if (oldDoctorId.equals(newDoctorId)) {
             throw new RuntimeException("Already assigned to this doctor");
         }
 
-        // ❌ Only allow WAITING tokens
-        if (token.getStatus() != TokenStatus.WAITING) {
+        boolean oldDoctorUnavailable = doctorRepository.findById(oldDoctorId)
+                .map(doctor -> !doctor.isAvailable())
+                .orElse(false);
+
+        if (token.getStatus() != TokenStatus.WAITING
+                && !(token.getStatus() == TokenStatus.CALLED && oldDoctorUnavailable)) {
             throw new RuntimeException("Only WAITING tokens can be reassigned");
         }
 
@@ -87,18 +117,35 @@ public class ReceptionService {
         String newKey = "queue:doctor:" + newDoctorId;
 
         // 🔥 Remove from old queue
-        redisTemplate.opsForZSet().remove(oldKey, tokenId.toString());
+        try {
+            redisTemplate.opsForZSet().remove(oldKey, tokenId.toString());
+        } catch (Exception e) {
+            throw new RuntimeException("Unable to update old doctor queue");
+        }
 
         // 🔥 Update DB
         token.setDoctorId(newDoctorId);
         tokenRepository.save(token);
+        log.info("AUDIT token-reassignment tokenId={} fromDoctorId={} toDoctorId={} status={}",
+                tokenId, oldDoctorId, newDoctorId, token.getStatus());
+        auditLogService.log(
+                "TOKEN_REASSIGNED",
+                "reception",
+                "Token " + token.getTokenNumber() + " moved from doctor " + oldDoctorId + " to doctor " + newDoctorId
+        );
 
         // 🔥 Add to new queue
-        redisTemplate.opsForZSet().add(
-                newKey,
-                tokenId.toString(),
-                token.getPriorityScore()
-        );
+        if (token.getStatus() == TokenStatus.WAITING) {
+            try {
+                redisTemplate.opsForZSet().add(
+                        newKey,
+                        tokenId.toString(),
+                        token.getPriorityScore()
+                );
+            } catch (Exception e) {
+                throw new RuntimeException("Unable to update new doctor queue");
+            }
+        }
 
         // 🔥 Broadcast BOTH doctors
         broadcastService.broadcastDoctorQueue(
@@ -110,31 +157,51 @@ public class ReceptionService {
                 newDoctorId,
                 doctorQueueService.buildDoctorQueueDTO(newDoctorId)
         );
+
+        broadcastService.broadcastReceptionOverview(
+                doctorQueueService.buildReceptionOverview()
+        );
     }
     public TokenResponse reinstateNoShow(Long tokenId, String reason) {
 
         Token token = tokenRepository.findById(tokenId)
                 .orElseThrow(() -> new RuntimeException("Token not found"));
 
-        // ❌ Only NO_SHOW allowed
-        if (token.getStatus() != TokenStatus.NO_SHOW) {
-            throw new RuntimeException("Only NO_SHOW tokens can be reinstated");
+        if (token.getStatus() != TokenStatus.NO_SHOW && token.getStatus() != TokenStatus.EXPIRED) {
+            throw new RuntimeException("Only NO_SHOW or EXPIRED tokens can be reinstated");
         }
 
         token.setStatus(TokenStatus.WAITING);
         tokenRepository.save(token);
 
         // 🔥 Add back to Redis queue
-        redisTemplate.opsForZSet().add(
-                "queue:doctor:" + token.getDoctorId(),
-                tokenId.toString(),
-                token.getPriorityScore()
-        );
+        if (token.getDoctorId() == null) {
+            throw new RuntimeException("Doctor assignment is required");
+        }
+        Doctor doctor = doctorRepository.findById(token.getDoctorId())
+                .orElseThrow(() -> new RuntimeException("Doctor not found"));
+        if (!doctor.isAvailable()) {
+            throw new RuntimeException("Assigned doctor is unavailable");
+        }
+
+        try {
+            redisTemplate.opsForZSet().add(
+                    "queue:doctor:" + token.getDoctorId(),
+                    tokenId.toString(),
+                    token.getPriorityScore()
+            );
+        } catch (Exception e) {
+            throw new RuntimeException("Unable to reinstate token in queue");
+        }
 
         // 🔥 Broadcast update
         broadcastService.broadcastDoctorQueue(
                 token.getDoctorId(),
                 doctorQueueService.buildDoctorQueueDTO(token.getDoctorId())
+        );
+
+        broadcastService.broadcastReceptionOverview(
+                doctorQueueService.buildReceptionOverview()
         );
 
         return TokenResponse.builder()
@@ -143,5 +210,17 @@ public class ReceptionService {
                 .status(token.getStatus().name())
                 .message("Patient reinstated")
                 .build();
+    }
+
+    public List<EligibleTokenDTO> getEligibleTokens(List<TokenStatus> statuses) {
+        return tokenRepository.findByStatusInOrderByCreatedAtDescWithPatient(statuses)
+                .stream()
+                .map(token -> EligibleTokenDTO.builder()
+                        .id(token.getId())
+                        .tokenNumber(token.getTokenNumber())
+                        .patientName(token.getPatient() != null ? token.getPatient().getName() : "Patient")
+                        .status(token.getStatus().name())
+                        .build())
+                .toList();
     }
 }

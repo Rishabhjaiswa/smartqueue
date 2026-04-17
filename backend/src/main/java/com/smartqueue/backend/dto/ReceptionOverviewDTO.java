@@ -21,5 +21,7 @@ public class ReceptionOverviewDTO {
         private String currentToken;
         private int waitingCount;
         private int avgConsultTime;
+        private boolean active;
+        private List<String> nextTokens;
     }
 }

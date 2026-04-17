@@ -23,48 +23,41 @@ public class AIService {
     private final ObjectMapper objectMapper;
 
     private static final String SYSTEM_PROMPT = """
-        You are a JSON extraction bot for a government queue system.
+        You are a medical queue assistant for a clinic.
         
-        YOUR ONLY JOB: Read the citizen's message and output a single JSON object.
-        DO NOT output any text before the JSON.
-        DO NOT output any text after the JSON.
-        DO NOT use markdown code fences.
-        DO NOT explain your answer.
-        ONLY output the raw JSON object, nothing else.
+        YOUR ONLY JOB: Read the patient's message and output a single JSON object.
         
-        JSON schema (copy this structure exactly):
+        STRICT RULES:
+        - Output ONLY raw JSON
+        - No explanation
+        - No markdown
+        - No extra text
+        
+        JSON schema:
         {
           "serviceType": "",
           "priorityFlag": "",
           "language": "",
-          "confidence": ,
-          "clarificationNeeded": ,
+          "confidence": 0,
+          "clarificationNeeded": false,
           "clarificationQuestion": "",
           "replyMessage": ""
         }
         
-        Rules for serviceType:
-        - aadhaar/aadhar → AADHAAR_UPDATE
-        - pan → PAN_CARD
-        - passport → PASSPORT
-        - driving/license/licence/DL → DRIVING_LICENSE
-        - income/certificate → INCOME_CERTIFICATE
-        - unclear → OTHER with clarificationNeeded: true
+        Service mapping:
+        - general → GENERAL
+        - follow up → FOLLOW_UP
+        - specialist → SPECIALIST
+        - emergency → EMERGENCY
+        - lab/test → LAB
+        - unclear → OTHER (clarificationNeeded: true)
         
-        Rules for priorityFlag:
-        - senior/elderly/aged/60+/old age → SENIOR
-        - emergency/urgent/critical/accident → EMERGENCY
-        - anything else → NORMAL
+        Priority:
+        - emergency/urgent → EMERGENCY
+        - senior/elderly/60+ → SENIOR
+        - else → NORMAL
         
-        Rules for language:
-        - Hindi words or Devanagari script → hi
-        - Marathi words → mr
-        - English → en
-        
-        Set clarificationNeeded to true ONLY when serviceType would be OTHER.
-        If clarificationNeeded is true, write a helpful clarificationQuestion.
-        
-        REMEMBER: Output ONLY the JSON. No other text. Start your response with {
+        Return ONLY JSON.
         """;
 
     public ChatResponse processMessage(ChatRequest request) {
@@ -81,7 +74,7 @@ public class AIService {
 
         IntentDTO intent = callOllama(userMessage);
 
-        if (intent == null) {
+        if (intent == null || intent.getConfidence() < 0.6) {
             log.warn("Ollama parse failed, using keyword fallback");
             return fallbackKeywordParse(request.getMessage(), officeId);
         }
@@ -90,7 +83,7 @@ public class AIService {
             return ChatResponse.builder()
                     .botMessage(intent.getClarificationQuestion() != null
                             ? intent.getClarificationQuestion()
-                            : "Which service do you need? Aadhaar, PAN, Passport, Driving License, or Income Certificate?")
+                            : "Which consultation do you need? General, Follow-up, Specialist, Emergency, or Lab/Test.")
                     .tokenGenerated(false)
                     .needsClarification(true)
                     .clarificationQuestion(intent.getClarificationQuestion())
@@ -112,7 +105,7 @@ public class AIService {
             }
 
 // Age-based override (60+)
-            if (msg.matches(".*\\b(6[0-9]|[7-9][0-9])\\b.*")) {
+            if (msg.matches(".*\\b([6-9][0-9])\\b.*")) {
                 priorityFlag = PriorityFlag.SENIOR;
             }
 
@@ -130,7 +123,9 @@ public class AIService {
         tokenRequest.setPriorityFlag(priorityFlag);
         tokenRequest.setOfficeId(officeId);
 
-        TokenResponse tokenResponse = queueService.generateToken(tokenRequest);
+        tokenRequest.setSeverityScore(defaultSeverity(priorityFlag));
+        tokenRequest.setChiefComplaint(request.getMessage());
+        TokenResponse tokenResponse = queueService.generateToken(tokenRequest,null);
 
         String botMsg = (intent.getReplyMessage() != null && !intent.getReplyMessage().isBlank())
                 ? intent.getReplyMessage() + " Token: " + tokenResponse.getTokenNumber()
@@ -156,22 +151,23 @@ public class AIService {
 
             String cleaned = raw.trim();
 
-            cleaned = cleaned.replaceAll("(?s)```json\\s*", "");
-            cleaned = cleaned.replaceAll("```", "");
-            cleaned = cleaned.trim();
+            cleaned = cleaned.replace("```json", "");
+            cleaned = cleaned.replace("```", "");
 
             int start = cleaned.indexOf('{');
             int end   = cleaned.lastIndexOf('}');
+
             if (start == -1 || end == -1 || end <= start) {
                 log.warn("No JSON object found in Ollama response: {}", cleaned);
                 return null;
             }
+
             cleaned = cleaned.substring(start, end + 1);
 
             return objectMapper.readValue(cleaned, IntentDTO.class);
 
         } catch (Exception e) {
-            log.error("Ollama call failed: {}", e.getMessage());
+            log.error("Ollama call failed", e);
             return null;
         }
     }
@@ -181,24 +177,22 @@ public class AIService {
         String lower = message.toLowerCase();
 
         ServiceType serviceType = ServiceType.OTHER;
-        if (lower.contains("aadhaar") || lower.contains("aadhar"))      serviceType = ServiceType.AADHAAR_UPDATE;
-        else if (lower.contains("pan"))                                  serviceType = ServiceType.PAN_CARD;
-        else if (lower.contains("passport"))                             serviceType = ServiceType.PASSPORT;
-        else if (lower.contains("driving") || lower.contains("license")
-                || lower.contains("licence") || lower.contains("dl"))     serviceType = ServiceType.DRIVING_LICENSE;
-        else if (lower.contains("income") || lower.contains("certificate")) serviceType = ServiceType.INCOME_CERTIFICATE;
 
+        if (lower.contains("general")) serviceType = ServiceType.GENERAL;
+        else if (lower.contains("follow")) serviceType = ServiceType.FOLLOW_UP;
+        else if (lower.contains("special")) serviceType = ServiceType.SPECIALIST;
+        else if (lower.contains("emergency")) serviceType = ServiceType.EMERGENCY;
+        else if (lower.contains("lab") || lower.contains("test")) serviceType = ServiceType.LAB;
         if (serviceType == ServiceType.OTHER) {
             return ChatResponse.builder()
-                    .botMessage("Which service do you need? Please say: Aadhaar update, PAN card, passport, driving license, or income certificate.")
-                    .tokenGenerated(false)
+                    .botMessage("Which consultation do you need? Please choose: General, Follow-up, Specialist, Emergency, or Lab/Test.")                    .tokenGenerated(false)
                     .needsClarification(true)
                     .build();
         }
 
         PriorityFlag priorityFlag = PriorityFlag.NORMAL;
         if (lower.contains("senior") || lower.contains("elderly") || lower.contains("aged") || lower.contains("old")
-                || lower.matches(".*\\b(6[0-9]|[7-9][0-9])\\b.*")) {
+                ||  lower.matches(".*\\b([6-9][0-9])\\b.*")) {
             priorityFlag = PriorityFlag.SENIOR;
         }
         if (lower.contains("emergency") || lower.contains("urgent"))
@@ -208,8 +202,10 @@ public class AIService {
         tokenRequest.setServiceType(serviceType);
         tokenRequest.setPriorityFlag(priorityFlag);
         tokenRequest.setOfficeId(officeId);
+        tokenRequest.setSeverityScore(defaultSeverity(priorityFlag));
+        tokenRequest.setChiefComplaint(message);
 
-        TokenResponse tokenResponse = queueService.generateToken(tokenRequest);
+        TokenResponse tokenResponse = queueService.generateToken(tokenRequest,null);
 
         return ChatResponse.builder()
                 .botMessage("Your token is " + tokenResponse.getTokenNumber()
@@ -219,6 +215,15 @@ public class AIService {
                 .tokenData(tokenResponse)
                 .build();
     }
+
+    private int defaultSeverity(PriorityFlag flag) {
+        return switch (flag) {
+            case EMERGENCY -> 10;
+            case SENIOR -> 7;
+            default -> 5;
+        };
+    }
+
     public com.smartqueue.backend.dto.QueueStateDTO getQueueStateForTelegram(int officeId) {
         return queueService.getQueueState((long)officeId);
     }

@@ -7,5 +7,7 @@ public enum TokenStatus {
     COMPLETED,
     NO_SHOW,
     CANCELLED,
+    EXPIRED,
+    RESCHEDULED,
     REFERRED
 }

@@ -1,8 +1,10 @@
 package com.smartqueue.backend.service;
 
 import com.smartqueue.backend.entity.Token;
+import com.smartqueue.backend.enums.ServiceType;
 import com.smartqueue.backend.enums.VisitType;
 import org.springframework.stereotype.Component;
+
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -10,59 +12,87 @@ import java.time.ZoneOffset;
 @Component
 public class PriorityEngine {
 
-    public long computeScore(Token token, int doctorQueueSize) {
-        long score = token.getCreatedAt()
+    private static final long PRIORITY_POINT_UNIT = 10_000L;
+    private static final long QUEUE_LOAD_UNIT = 30_000L;
+
+    public long computeScore(Token token, int doctorQueueSize, int patientAge) {
+        long baseScore = token.getCreatedAt()
                 .toInstant(ZoneOffset.UTC).toEpochMilli();
 
-        int age = (token.getPatient() != null && token.getPatient().getAge() != null)
-                ? token.getPatient().getAge()
-                : 30; // default fallback
+        int severityScore = Math.max(0, token.getSeverityScore() != null ? token.getSeverityScore() : 0);
+        long waitMins = Math.max(0, Duration.between(token.getCreatedAt(), LocalDateTime.now()).toMinutes());
 
-        score -= ageBonus(age);
+        int weightedPriority =
+                (severityScore * 50)
+                        + (ageFactor(patientAge) * 10)
+                        + (waitingTimeFactor(waitMins) * 5)
+                        + (serviceTypeWeight(token.getServiceType()) * 20)
+                        + appointmentAdjustment(token)
+                        + visitTypeAdjustment(token.getVisitType());
 
-        long waitMins = Duration.between(
-                token.getCreatedAt(), LocalDateTime.now()).toMinutes();
-        long waitPenalty = (long)(waitMins * 60_000L * starvationMultiplier(waitMins));
-        waitPenalty = Math.min(waitPenalty, 3_600_000L); // cap
-        score -= waitPenalty;
+        return baseScore
+                - (weightedPriority * PRIORITY_POINT_UNIT)
+                + (doctorQueueSize * QUEUE_LOAD_UNIT);
+    }
 
-        if (token.getVisitType() == VisitType.APPOINTMENT
-                && token.getAppointmentScheduledTime() != null) {
-            score -= appointmentUrgencyBonus(token);
+    private int ageFactor(int age) {
+        if (age >= 75) return 3;
+        if (age >= 60) return 2;
+        if (age <= 12) return 1;
+        return 0;
+    }
+
+    private int waitingTimeFactor(long waitMins) {
+        if (waitMins >= 180) return 30;
+        if (waitMins >= 120) return 24;
+        if (waitMins >= 60) return 16;
+        return (int) Math.min(12, waitMins / 5);
+    }
+
+    private int appointmentAdjustment(Token token) {
+        if (token.getVisitType() != VisitType.APPOINTMENT || token.getAppointmentScheduledTime() == null) {
+            return 0;
         }
 
-        if (token.getVisitType() == VisitType.FOLLOW_UP) {
-            score -= 600_000L;
+        long minutesFromNow = Duration.between(LocalDateTime.now(), token.getAppointmentScheduledTime()).toMinutes();
+
+        if (minutesFromNow > 30) {
+            return -120;
         }
-
-        score -= (token.getSeverityScore() * 120_000L);
-
-        score += (doctorQueueSize * 60_000L);
-
-        return score;
+        if (minutesFromNow > 15) {
+            return -45;
+        }
+        if (minutesFromNow >= -15) {
+            return 30;
+        }
+        if (minutesFromNow >= -30) {
+            return -15;
+        }
+        return -90;
     }
 
-    private long ageBonus(int age) {
-        if (age >= 80) return 1_200_000L;
-        if (age >= 60) return 600_000L;
-        if (age <= 12) return 400_000L;
-        return 0L;
+    private int serviceTypeWeight(ServiceType serviceType) {
+        if (serviceType == null) {
+            return 0;
+        }
+        return switch (serviceType) {
+            case EMERGENCY -> 10;
+            case SPECIALIST -> 7;
+            case GENERAL -> 5;
+            case FOLLOW_UP -> 3;
+            case LAB -> 2;
+            default -> 4;
+        };
     }
 
-    private double starvationMultiplier(long waitMins) {
-        if (waitMins > 90) return 4.0;
-        if (waitMins > 60) return 2.5;
-        if (waitMins > 30) return 1.5;
-        return 1.0;
-    }
-
-    private long appointmentUrgencyBonus(Token token) {
-        if (token.getAppointmentScheduledTime() == null) return 0L;
-        long minsToAppt = Duration.between(
-                LocalDateTime.now(),
-                token.getAppointmentScheduledTime()).toMinutes();
-        if (minsToAppt < 0)   return 1_800_000L;
-        if (minsToAppt <= 15) return 900_000L;
-        return 0L;
+    private int visitTypeAdjustment(VisitType visitType) {
+        if (visitType == null) {
+            return 0;
+        }
+        return switch (visitType) {
+            case EMERGENCY -> 40;
+            case FOLLOW_UP -> 10;
+            case APPOINTMENT, WALK_IN, REFERRAL -> 0;
+        };
     }
 }

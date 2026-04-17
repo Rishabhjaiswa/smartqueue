@@ -1,5 +1,6 @@
 package com.smartqueue.backend.controller;
 
+import com.smartqueue.backend.dto.DoctorQueueDTO;
 import com.smartqueue.backend.dto.TokenResponse;
 import com.smartqueue.backend.service.DoctorQueueService;
 import com.smartqueue.backend.service.StaffUserService;
@@ -54,6 +55,17 @@ public class DoctorController {
         return ResponseEntity.ok().build();
     }
 
+    @PostMapping("/token/{tokenId}/extend")
+    public ResponseEntity<Void> extendConsultation(
+            @PathVariable Long tokenId,
+            @AuthenticationPrincipal UserDetails user) {
+
+        Long doctorId = staffUserService.getDoctorId(user.getUsername());
+        doctorQueueService.extendConsultation(tokenId, doctorId);
+
+        return ResponseEntity.ok().build();
+    }
+
     @PutMapping("/availability")
     public ResponseEntity<Void> toggleAvailability(
             @RequestParam boolean available,
@@ -63,5 +75,16 @@ public class DoctorController {
         doctorQueueService.setAvailability(doctorId, available);
 
         return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/queue")
+    public ResponseEntity<DoctorQueueDTO> getQueue(
+            @AuthenticationPrincipal UserDetails user) {
+
+        Long doctorId = staffUserService.getDoctorId(user.getUsername());
+
+        return ResponseEntity.ok(
+                doctorQueueService.buildDoctorQueueDTO(doctorId)
+        );
     }
 }
