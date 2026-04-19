@@ -20,6 +20,7 @@ import com.smartqueue.backend.repository.PatientRepository;
 import com.smartqueue.backend.entity.Patient;
 
 import java.util.concurrent.CompletableFuture;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * AI-driven triage service.
@@ -45,6 +46,9 @@ public class AIService {
     private final RuleBasedPreClassifier preClassifier;
     private final AuditLogService auditLogService;
     private final PatientRepository patientRepository;
+
+    @Value("${smartqueue.ai.enabled:true}")
+    private boolean aiEnabled;
 
     // Circuit breaker name must match resilience4j config in application.properties
     private static final String CB_NAME = "ollama";
@@ -99,6 +103,11 @@ public class AIService {
         RuleBasedPreClassifier.ClassificationResult preResult =
                 preClassifier.classify(request.getMessage());
 
+        if (!aiEnabled) {
+            log.info("AI is disabled by feature flag — using rule classifier directly");
+            return buildFromPreClassifier(preResult, request.getMessage(), officeId, patient);
+        }
+
         if (preResult.confidence() >= 0.85) {
             log.info("Rule classifier high-confidence hit ({}) — skipping Ollama",
                     preResult.confidence());
@@ -107,7 +116,14 @@ public class AIService {
         }
 
         // ── Step 2: Ollama LLM (with circuit breaker + fallback) ─────────────
-        return callOllamaWithCircuitBreaker(request, officeId, preResult, patient);
+        try {
+            // NOTE: Self-invocation of @CircuitBreaker method bypasses Spring AOP proxy.
+            // A manual try-catch is enforced here to guarantee request safety.
+            return callOllamaWithCircuitBreaker(request, officeId, preResult, patient);
+        } catch (Exception e) {
+            log.warn("LLM failure detected, switching to fallback", e);
+            return ollamaFallback(request, officeId, preResult, patient, e);
+        }
     }
 
     /**
@@ -251,8 +267,8 @@ public class AIService {
 
             return objectMapper.readValue(cleaned.substring(start, end + 1), IntentDTO.class);
         } catch (Exception e) {
-            log.error("Ollama call failed", e);
-            return null;
+            log.error("Ollama call failed: {}", e.getMessage());
+            throw new RuntimeException("Ollama unavailable or timed out", e);
         }
     }
 

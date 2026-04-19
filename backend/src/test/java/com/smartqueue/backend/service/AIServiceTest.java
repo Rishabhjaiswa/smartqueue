@@ -19,8 +19,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Unit tests for {@link AIService}.
@@ -53,6 +55,7 @@ class AIServiceTest {
     void setUp() {
         realClassifier = new RuleBasedPreClassifier();
         aiService = new AIService(chatClient, queueService, objectMapper, realClassifier, auditLogService, patientRepository);
+        ReflectionTestUtils.setField(aiService, "aiEnabled", true);
 
         // Default queue state returned for context building (lenient — only needed by Ollama path)
         lenient().when(queueService.getQueueState(any())).thenReturn(
@@ -136,6 +139,23 @@ class AIServiceTest {
 
             assertThat(captor.getValue().getServiceType()).isEqualTo(ServiceType.LAB);
             assertThat(captor.getValue().getPriorityFlag()).isEqualTo(PriorityFlag.SENIOR);
+        }
+
+        @Test
+        @DisplayName("When AI is disabled via feature flag, uses rule classifier directly without calling Ollama")
+        void aiDisabledUsesRuleClassifier() {
+            ReflectionTestUtils.setField(aiService, "aiEnabled", false);
+            when(queueService.generateToken(any(TokenRequest.class), any()))
+                    .thenReturn(sampleToken("D3-T1", 1));
+
+            ChatRequest req = new ChatRequest();
+            req.setMessage("general consultation");
+            req.setOfficeId(1);
+
+            ChatResponse response = aiService.processMessage(req);
+
+            assertThat(response.isTokenGenerated()).isTrue();
+            verifyNoInteractions(chatClient);
         }
     }
 
@@ -225,6 +245,24 @@ class AIServiceTest {
 
             // No token should have been queued
             verify(queueService, never()).generateToken(any(), any());
+        }
+
+        @Test
+        @DisplayName("processMessage safely catches exceptions and returns valid fallback response")
+        void callOllamaThrowsWhenChatClientFails() {
+            when(queueService.generateToken(any(TokenRequest.class), any()))
+                    .thenReturn(sampleToken("D3-T9", 1));
+            when(chatClient.call(anyString())).thenThrow(new RuntimeException("Timeout from Ollama"));
+
+            ChatRequest req = new ChatRequest();
+            req.setMessage("general checkup");
+            req.setOfficeId(1);
+
+            ChatResponse response = aiService.processMessage(req);
+
+            assertThat(response.isTokenGenerated()).isTrue();
+            // Verify fallback was used
+            verify(auditLogService).log(eq("AI_TRIAGE_FALLBACK"), anyString(), anyString());
         }
     }
 

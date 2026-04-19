@@ -10,7 +10,6 @@
 # ========================
 backend/target/
 backend/.mvn/
-backend/src/main/resources/application.properties
 
 # ========================
 # Frontend (React)
