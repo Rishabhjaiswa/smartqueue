@@ -23,16 +23,18 @@ public class RedissonConfig {
     @Value("${spring.data.redis.port:6379}")
     private int redisPort;
 
+    @Value("${spring.data.redis.password:}")
+    private String redisPassword;
+
     @Bean(destroyMethod = "shutdown")
     public RedissonClient redissonClient() {
         Config config = new Config();
         config.useSingleServer()
-              .setAddress("redis://" + redisHost + ":" + redisPort)
-              // keep-alive so locks are not lost on idle connection reaping
-              .setKeepAlive(true)
-              // connection pool tuned for lock-only workload (small pool is fine)
-              .setConnectionMinimumIdleSize(2)
-              .setConnectionPoolSize(4);
+                .setAddress("rediss://" + redisHost + ":" + redisPort)
+                .setPassword(redisPassword)
+                .setKeepAlive(true)
+                .setConnectionMinimumIdleSize(2)
+                .setConnectionPoolSize(4);
         return Redisson.create(config);
     }
 }
