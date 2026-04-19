@@ -23,7 +23,7 @@ export default function App() {
                     } />
 
                     <Route path="/reception" element={
-                        <ProtectedRoute allowedRoles={['ROLE_RECEPTIONIST', 'ROLE_ADMIN']}>
+                        <ProtectedRoute allowedRoles={['ROLE_RECEPTIONIST']}>
                             <ReceptionPanel />
                         </ProtectedRoute>
                     } />

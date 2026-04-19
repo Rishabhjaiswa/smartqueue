@@ -112,6 +112,12 @@ export const getDoctors = () =>
 export const getDisplayBoard = () =>
     api.get("/api/reception/display");
 
+// ======================
+// 🤖 AI Chat
+// ======================
+export const sendChatMessage = (message, officeId) =>
+    api.post("/api/chat", { message, officeId });
+
 export default api;
 
 export const resetLoginRedirect = () => {

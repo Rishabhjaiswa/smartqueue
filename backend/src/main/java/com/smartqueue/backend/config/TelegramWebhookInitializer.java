@@ -25,7 +25,11 @@ public class TelegramWebhookInitializer {
             return;
         }
         String normalizedWebhookBaseUrl = webhookBaseUrl.trim();
-        log.info("Registering Telegram webhook at: {}", normalizedWebhookBaseUrl);
-        telegramService.registerWebhook(normalizedWebhookBaseUrl);
+        log.info("Registering Telegram webhook asynchronously at: {}", normalizedWebhookBaseUrl);
+        // Run in background so Spring startup is not blocked by Telegram API latency
+        Thread t = new Thread(() -> telegramService.registerWebhook(normalizedWebhookBaseUrl),
+                "telegram-webhook-init");
+        t.setDaemon(true);
+        t.start();
     }
 }

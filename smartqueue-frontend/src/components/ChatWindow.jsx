@@ -2,11 +2,11 @@ import { useState, useRef, useEffect } from 'react';
 import { sendChatMessage } from '../services/api';
 
 const SUGGESTIONS = [
-  'I need Aadhaar update',
-  'PAN card correction',
-  'Passport renewal',
-  'I am a senior citizen, need help',
-  'Driving license renewal',
+  'I have a severe headache and fever',
+  'I need a routine checkup',
+  'My child has a high fever',
+  'I need to show my blood test reports',
+  'I have severe chest pain',
 ];
 
 export default function ChatWindow({ officeId = 1, onTokenGenerated }) {

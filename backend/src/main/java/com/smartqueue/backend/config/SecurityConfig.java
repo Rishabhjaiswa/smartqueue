@@ -40,7 +40,8 @@ public class SecurityConfig {
                                 "/api/patient/status/**",
                                 "/telegram/webhook",
                                 "/ws/**", "/ws/info",
-                                "/api/reception/display"
+                                "/api/reception/display",
+                                "/actuator/health"         // Docker healthcheck — no auth needed
                         ).permitAll()
                         .requestMatchers("/api/reception/**")
                         .hasAnyRole("RECEPTIONIST", "ADMIN")

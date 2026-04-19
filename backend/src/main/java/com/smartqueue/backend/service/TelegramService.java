@@ -2,6 +2,7 @@ package com.smartqueue.backend.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -15,7 +16,14 @@ public class TelegramService {
     @Value("${telegram.bot.token}")
     private String botToken;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
+
+    public TelegramService() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5_000);  // 5 s connect timeout
+        factory.setReadTimeout(5_000);     // 5 s read timeout
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     private static final String TELEGRAM_API =
             "https://api.telegram.org/bot";

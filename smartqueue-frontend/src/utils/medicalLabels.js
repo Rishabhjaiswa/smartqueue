@@ -1,9 +1,9 @@
 export const SERVICE_TYPE_OPTIONS = [
-    { value: "AADHAAR_UPDATE", label: "General Consultation" },
-    { value: "PAN_CARD", label: "Follow-up Visit" },
-    { value: "PASSPORT", label: "Specialist Consultation" },
-    { value: "DRIVING_LICENSE", label: "Emergency" },
-    { value: "INCOME_CERTIFICATE", label: "Lab/Test Review" },
+    { value: "GENERAL", label: "General Consultation" },
+    { value: "FOLLOW_UP", label: "Follow-up Visit" },
+    { value: "SPECIALIST", label: "Specialist Consultation" },
+    { value: "EMERGENCY", label: "Emergency" },
+    { value: "LAB", label: "Lab/Test Review" },
     { value: "OTHER", label: "Other Consultation" }
 ];
 

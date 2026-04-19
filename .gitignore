@@ -22,3 +22,23 @@ smartqueue-frontend/build/
 # OS files
 # ========================
 .DS_Store
+
+# ========================
+# Environment / Secrets
+# ========================
+# Commit .env.example, NEVER .env
+.env
+*.env.local
+
+# ========================
+# Observability data
+# ========================
+infra/grafana/data/
+infra/prometheus/data/
+
+# ========================
+# Docker / build artefacts
+# ========================
+*.log
+
+cookies.txt

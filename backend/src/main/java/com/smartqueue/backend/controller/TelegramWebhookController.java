@@ -16,6 +16,11 @@ import com.smartqueue.backend.repository.TokenRepository;
 import com.smartqueue.backend.service.DoctorQueueService;
 import com.smartqueue.backend.service.QueueService;
 import com.smartqueue.backend.service.TelegramService;
+import com.smartqueue.backend.service.AIService;
+import com.smartqueue.backend.dto.ChatRequest;
+import com.smartqueue.backend.dto.ChatResponse;
+import com.smartqueue.backend.repository.DoctorRepository;
+import com.smartqueue.backend.entity.Doctor;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -46,6 +51,8 @@ public class TelegramWebhookController{
     private final TokenRepository tokenRepository;
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
+    private final AIService aiService;
+    private final DoctorRepository doctorRepository;
 
     @Value("${telegram.bot.default-office-id:1}")
     private int defaultOfficeId;
@@ -156,12 +163,11 @@ public class TelegramWebhookController{
                     session.setName(selected.getName());
                     session.setAge(selected.getAge());
                     if (Boolean.TRUE.equals(session.getBookingSelection())) {
-                        session.setStep(IntakeStep.ASK_SERVICE);
+                        session.setStep(IntakeStep.CHAT_WITH_AI);
                         saveSession(chatId, session);
                         telegramService.sendMessage(chatId,
                                 "<b>Selected patient:</b> " + escapeHtml(selected.getName()) + "\n\n"
-                                        + "<b>Step 3 of 4</b>\nChoose the consultation type:\n"
-                                        + consultationOptions());
+                                        + "Please describe your symptoms or reason for visit (e.g., 'I have a severe headache' or 'I need a regular checkup').");
                     } else {
                         session.setStep(IntakeStep.SELECT_PATIENT);
                         session.setBookingSelection(false);
@@ -203,142 +209,101 @@ public class TelegramWebhookController{
                     return;
                 }
 
-                session.setStep(IntakeStep.ASK_SERVICE);
+                session.setStep(IntakeStep.CHAT_WITH_AI);
                 saveSession(chatId, session);
+                
+                // Create patient if it's new
+                Patient newPatient = Patient.builder()
+                        .name(session.getName())
+                        .phone(buildTelegramPhone(chatId))
+                        .age(session.getAge() != null ? session.getAge() : 30)
+                        .telegramChatId(chatId)
+                        .createdAt(LocalDateTime.now())
+                        .build();
+                newPatient = patientRepository.save(newPatient);
+                session.setActivePatientId(newPatient.getId());
+                saveSession(chatId, session);
+
                 telegramService.sendMessage(chatId,
-                        "<b>Step 3 of 4</b>\nChoose the consultation type:\n"
-                                + consultationOptions());
+                        "Patient registered.\n\nPlease describe your symptoms or reason for visit (e.g., 'I have a severe chest pain').");
             }
             case CONFIRM_EXISTING -> {
                 String normalized = text.trim().toLowerCase();
                 if (List.of("yes", "y").contains(normalized)) {
-                    session.setStep(IntakeStep.ASK_SERVICE);
+                    session.setStep(IntakeStep.CHAT_WITH_AI);
                     saveSession(chatId, session);
                     telegramService.sendMessage(chatId,
-                            "<b>Step 3 of 4</b>\nChoose the consultation type:\n"
-                                    + consultationOptions());
+                            "Please describe your symptoms or reason for visit (e.g., 'I need a follow up').");
                     return;
                 }
                 if (List.of("no", "n").contains(normalized)) {
                     session.setActivePatientId(null);
-                    session.setStep(IntakeStep.ASK_SERVICE);
+                    session.setStep(IntakeStep.CHAT_WITH_AI);
                     saveSession(chatId, session);
+                    
+                    Patient newPatient = Patient.builder()
+                            .name(session.getName())
+                            .phone(buildTelegramPhone(chatId))
+                            .age(session.getAge() != null ? session.getAge() : 30)
+                            .telegramChatId(chatId)
+                            .createdAt(LocalDateTime.now())
+                            .build();
+                    newPatient = patientRepository.save(newPatient);
+                    session.setActivePatientId(newPatient.getId());
+                    saveSession(chatId, session);
+
                     telegramService.sendMessage(chatId,
-                            "<b>Step 3 of 4</b>\nCreating a new patient.\nChoose the consultation type:\n"
-                                    + consultationOptions());
+                            "New patient registered.\nPlease describe your symptoms or reason for visit.");
                     return;
                 }
                 telegramService.sendMessage(chatId, "Reply <b>yes</b> to use the existing patient or <b>no</b> to register new.");
             }
-            case ASK_SERVICE -> {
-                ServiceType serviceType = parseServiceType(text);
-                if (serviceType == null) {
-                    telegramService.sendMessage(chatId,
-                            "Please choose one of these consultation types:\n"
-                                    + consultationOptions());
+            case CHAT_WITH_AI -> {
+                if (session.getActivePatientId() == null) {
+                    telegramService.sendMessage(chatId, "Please select a patient using /patients first.");
                     return;
                 }
-                session.setServiceType(serviceType);
-                session.setStep(IntakeStep.CONFIRM);
-                saveSession(chatId, session);
-                telegramService.sendMessage(chatId,
-                        "<b>Step 4 of 4</b>\nPlease confirm this booking:\n\n"
-                                + "<b>Name:</b> " + escapeHtml(session.getName()) + "\n"
-                                + "<b>Age:</b> " + session.getAge() + "\n"
-                                + "<b>Consultation:</b> " + formatServiceType(session.getServiceType()) + "\n"
-                                + "Reply with <b>yes</b> to confirm or <b>no</b> to restart.");
-            }
-            case CONFIRM -> {
-                String normalized = text.trim().toLowerCase();
-                if (List.of("yes", "y", "confirm").contains(normalized)) {
-                    if (!isBookingSessionComplete(session)) {
-                        saveSession(chatId, new IntakeSession(IntakeStep.ASK_NAME, null, null, null, session.getActivePatientId(), true));
-                        telegramService.sendMessage(chatId,
-                                "Booking details were incomplete. Restarting safely.\n\n<b>Step 1 of 4</b>\nPlease enter the patient name.");
-                        return;
-                    }
 
-                    log.info("TELEGRAM CONFIRMATION: chatId={}, name={}, age={}, serviceType={}",
-                            chatId, session.getName(), session.getAge(), session.getServiceType());
-                    try {
-                        TokenResponse tokenResponse = createTelegramToken(chatId, session);
+                ChatRequest request = new ChatRequest();
+                request.setMessage(text);
+                request.setOfficeId(defaultOfficeId);
+                request.setPatientId(session.getActivePatientId());
+                request.setSessionId(chatId.toString());
 
+                try {
+                    ChatResponse response = aiService.processMessage(request);
+
+                    if (response.isTokenGenerated()) {
+                        TokenResponse tokenResponse = response.getTokenData();
                         if ("ALREADY_EXISTS".equals(tokenResponse.getMessage())) {
-                            telegramService.sendMessage(chatId,
-                                    "You already have an active token.\n\nUse <b>/status</b> to track it or <b>/cancel</b> to cancel.");
-                            return;
-                        }
-                        log.info("TOKEN CREATED: {}", tokenResponse.getTokenNumber());
-                        clearBookingSession(chatId, session);
-                        telegramService.sendMessage(chatId,
+                            telegramService.sendMessage(chatId, "You already have an active token.\n\nUse <b>/status</b> to track it or <b>/cancel</b> to cancel.");
+                        } else {
+                            telegramService.sendMessage(chatId, 
                                 "<b>Token confirmed.</b>\n\n"
-                                        + "<b>Token:</b> " + escapeHtml(tokenResponse.getTokenNumber()) + "\n"
-                                        + "<b>Doctor:</b> " + escapeHtml(tokenResponse.getDoctorName()) + "\n"
-                                        + "<b>Position:</b> #" + tokenResponse.getPositionInQueue() + "\n"
-                                        + "<b>Estimated wait:</b> " + buildWaitRange(tokenResponse.getEstimatedWaitMinutes()) + "\n\n"
-                                        + "Please keep this chat open for live updates.");
-                    } catch (Exception ex) {
-                        log.error("TOKEN CREATION FAILED", ex);
-                        if ("Patient already has an active token".equals(ex.getMessage())
-                                || "ALREADY_EXISTS".equals(ex.getMessage())) {
-                            telegramService.sendMessage(chatId,
-                                    "You already have an active token.\n\nUse <b>/status</b> to track it or <b>/cancel</b> to cancel.");
-                            return;
+                                + "<b>Token:</b> " + escapeHtml(tokenResponse.getTokenNumber()) + "\n"
+                                + "<b>Doctor:</b> " + escapeHtml(tokenResponse.getDoctorName()) + "\n"
+                                + "<b>Position:</b> #" + tokenResponse.getPositionInQueue() + "\n"
+                                + "<b>Estimated wait:</b> " + buildWaitRange(tokenResponse.getEstimatedWaitMinutes()) + "\n\n"
+                                + "Please keep this chat open for live updates.");
                         }
-                        telegramService.sendMessage(chatId,
-                                "Error: " + escapeHtml(ex.getMessage() != null ? ex.getMessage() : "Unable to create token"));
+                        clearBookingSession(chatId, session);
+                    } else {
+                        // Needs clarification or other response
+                        telegramService.sendMessage(chatId, escapeHtml(response.getBotMessage()));
                     }
-                    return;
+                } catch (Exception ex) {
+                    log.error("AI Triage Error", ex);
+                    if ("Patient already has an active token".equals(ex.getMessage())) {
+                        telegramService.sendMessage(chatId, "You already have an active token.\n\nUse <b>/status</b> to track it or <b>/cancel</b> to cancel.");
+                    } else {
+                        telegramService.sendMessage(chatId, "Sorry, I am unable to process your request at the moment. Please approach the help desk.");
+                    }
                 }
-
-                if (List.of("no", "n", "restart").contains(normalized)) {
-                    saveSession(chatId, new IntakeSession(IntakeStep.ASK_NAME, null, null, null, null, true));
-                    telegramService.sendMessage(chatId,
-                            "Booking restarted.\n\n<b>Step 1 of 4</b>\nPlease enter the patient name.");
-                    return;
-                }
-
-                telegramService.sendMessage(chatId,
-                        "Please reply with <b>yes</b> to confirm or <b>no</b> to restart.");
             }
         }
     }
 
-    private TokenResponse createTelegramToken(Long chatId, IntakeSession session) {
-        if (!isBookingSessionComplete(session)) {
-            throw new IllegalArgumentException("Telegram booking session is incomplete");
-        }
-
-        Patient patient = session.getActivePatientId() != null
-                ? patientRepository.findById(session.getActivePatientId()).orElse(null)
-                : null;
-
-        if (patient == null) {
-            patient = Patient.builder()
-                    .name(session.getName())
-                    .phone(buildTelegramPhone(chatId))
-                    .age(session.getAge() != null ? session.getAge() : 30)
-                    .telegramChatId(chatId)
-                    .createdAt(LocalDateTime.now())
-                    .build();
-        } else {
-            patient.setName(session.getName());
-            patient.setAge(session.getAge());
-        }
-
-        patient.setTelegramChatId(chatId);
-        patient.setCreatedAt(patient.getCreatedAt() != null ? patient.getCreatedAt() : LocalDateTime.now());
-        patient = patientRepository.save(patient);
-        session.setActivePatientId(patient.getId());
-
-        TokenRequest tokenRequest = new TokenRequest();
-        tokenRequest.setOfficeId(defaultOfficeId);
-        tokenRequest.setServiceType(session.getServiceType());
-        tokenRequest.setSeverityScore(defaultSeverityForService(session.getServiceType()));
-        tokenRequest.setVisitType(VisitType.WALK_IN);
-
-        return queueService.generateToken(tokenRequest, patient);
-    }
+    // Token creation moved to AIService
 
     private String buildStatusMessage(Long chatId) {
         Patient activePatient = resolveActivePatient(chatId);
@@ -364,12 +329,20 @@ public class TelegramWebhookController{
         StringBuilder message = new StringBuilder("<b>Your active tokens</b>\n");
         for (Token token : tokens) {
             int estimatedWait = estimateTokenWaitMinutes(token);
+            
+            String doctorName = "TBD";
+            if (token.getDoctorId() != null) {
+                doctorName = doctorRepository.findById(token.getDoctorId())
+                        .map(Doctor::getName)
+                        .orElse("D" + token.getDoctorId());
+            }
+
             message.append("\n<b>")
                     .append(escapeHtml(token.getTokenNumber()))
                     .append("</b> · ")
                     .append(token.getStatus().name())
                     .append("\nDoctor: ")
-                    .append(escapeHtml(token.getDoctorId() != null ? "D" + token.getDoctorId() : "TBD"))
+                    .append(escapeHtml(doctorName))
                     .append("\nEstimated wait: ")
                     .append(buildWaitRange(estimatedWait))
                     .append("\n");
@@ -661,9 +634,8 @@ public class TelegramWebhookController{
         SELECT_PATIENT,
         ASK_NAME,
         ASK_AGE,
-        ASK_SERVICE,
-        CONFIRM_EXISTING,
-        CONFIRM
+        CHAT_WITH_AI,
+        CONFIRM_EXISTING
     }
 
     @Data

@@ -8,9 +8,12 @@ import com.smartqueue.backend.entity.Patient;
 import com.smartqueue.backend.entity.Token;
 import com.smartqueue.backend.enums.TokenStatus;
 import com.smartqueue.backend.enums.VisitType;
+import com.smartqueue.backend.lock.RedissonLockService;
 import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.PatientRepository;
 import com.smartqueue.backend.repository.TokenRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -34,6 +37,8 @@ public class QueueService {
     private final PatientRepository patientRepository;
     private final RedisTemplate<String, String> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
+    private final RedissonLockService lockService;
+    private final MeterRegistry meterRegistry;
     private final PriorityEngine priorityEngine;
     private final DoctorQueueService doctorQueueService;
 
@@ -161,54 +166,53 @@ public class QueueService {
         validateClinicAccess(request);
         Patient persistedPatient = persistPatient(patient);
 
-        // ✅ ACTIVE TOKEN CHECK (ONLY ONCE)
-        Optional<Token> activeTokenOpt = tokenRepository
-                .findFirstByPatientIdAndStatusIn(
-                        persistedPatient.getId(),
-                        List.of(TokenStatus.WAITING, TokenStatus.CALLED, TokenStatus.IN_CONSULTATION)
-                );
+        // ── Distributed lock per patient ──────────────────────────────────────
+        // Prevents two concurrent requests for the same patient both passing
+        // the duplicate-check and creating two tokens (race condition fix).
+        String lockKey = "lock:token:patient:" + (persistedPatient != null ? persistedPatient.getId() : "anon");
+        return lockService.executeWithLock(lockKey, 5, () -> generateTokenLocked(request, persistedPatient));
+    }
 
-        if (activeTokenOpt.isPresent()) {
-            Token existing = activeTokenOpt.get();
+    private TokenResponse generateTokenLocked(TokenRequest request, Patient persistedPatient) {
 
-            Doctor doctor = doctorRepository.findById(existing.getDoctorId())
-                    .orElse(null);
+        // ✅ ACTIVE TOKEN CHECK — only for identified patients
+        if (persistedPatient != null) {
+            Optional<Token> activeTokenOpt = tokenRepository
+                    .findFirstByPatientIdAndStatusIn(
+                            persistedPatient.getId(),
+                            List.of(TokenStatus.WAITING, TokenStatus.CALLED, TokenStatus.IN_CONSULTATION)
+                    );
 
-            int position = getPosition(existing.getId(), existing.getDoctorId());
-            int avg = (doctor != null && doctor.getAvgConsultMins() != null && doctor.getAvgConsultMins() > 0)
-                    ? doctor.getAvgConsultMins()
-                    : 10;
+            if (activeTokenOpt.isPresent()) {
+                Token existing = activeTokenOpt.get();
+                Doctor doctor = doctorRepository.findById(existing.getDoctorId()).orElse(null);
+                int position = getPosition(existing.getId(), existing.getDoctorId());
+                int avg = (doctor != null && doctor.getAvgConsultMins() != null && doctor.getAvgConsultMins() > 0)
+                        ? doctor.getAvgConsultMins() : 10;
+                return TokenResponse.builder()
+                        .id(existing.getId())
+                        .tokenNumber(existing.getTokenNumber())
+                        .status(existing.getStatus().name())
+                        .doctorName(doctor != null ? doctor.getName() : "Assigned")
+                        .roomNumber(doctor != null ? doctor.getRoomNumber() : null)
+                        .positionInQueue(position)
+                        .estimatedWaitMinutes(position * avg)
+                        .message("ALREADY_EXISTS")
+                        .build();
+            }
 
-            int waitMins = position * avg;
-
-            return TokenResponse.builder()
-                    .id(existing.getId())
-                    .tokenNumber(existing.getTokenNumber())
-                    .status(existing.getStatus().name())
-                    .doctorName(doctor != null ? doctor.getName() : "Assigned")
-                    .roomNumber(doctor != null ? doctor.getRoomNumber() : null)
-                    .positionInQueue(position)
-                    .estimatedWaitMinutes(waitMins)
-                    .message("ALREADY_EXISTS")
-                    .build();
-        }
-
-
-// ✅ RECENT TOKEN CHECK
-        Optional<Token> recentTokenOpt = tokenRepository
-                .findTopByPatientIdOrderByCreatedAtDesc(persistedPatient.getId());
-
-        if (recentTokenOpt.isPresent()) {
-            Token recent = recentTokenOpt.get();
-
-            if ((recent.getStatus() == TokenStatus.COMPLETED
-                    || recent.getStatus() == TokenStatus.CANCELLED
-                    || recent.getStatus() == TokenStatus.NO_SHOW)
-                    && recent.getCreatedAt().isAfter(LocalDateTime.now().minusMinutes(10))) {
-
-                throw new IllegalArgumentException(
-                        "You recently booked a token. Please wait or check /status."
-                );
+            // ✅ RECENT TOKEN CHECK — only for identified patients
+            Optional<Token> recentTokenOpt = tokenRepository
+                    .findTopByPatientIdOrderByCreatedAtDesc(persistedPatient.getId());
+            if (recentTokenOpt.isPresent()) {
+                Token recent = recentTokenOpt.get();
+                if ((recent.getStatus() == TokenStatus.COMPLETED
+                        || recent.getStatus() == TokenStatus.CANCELLED
+                        || recent.getStatus() == TokenStatus.NO_SHOW)
+                        && recent.getCreatedAt().isAfter(LocalDateTime.now().minusMinutes(10))) {
+                    throw new IllegalArgumentException(
+                            "You recently booked a token. Please wait or check /status.");
+                }
             }
         }
         Doctor doctor = assignDoctor(request);
@@ -274,6 +278,12 @@ public class QueueService {
         broadcastService.broadcastReceptionOverview(
                 doctorQueueService.buildReceptionOverview()
         );
+
+        Counter.builder("smartqueue.token.generated")
+                .tag("serviceType", token.getServiceType().name())
+                .tag("priorityFlag", request.getPriorityFlag() != null ? request.getPriorityFlag().name() : "NORMAL")
+                .register(meterRegistry)
+                .increment();
 
         return TokenResponse.builder()
                 .id(token.getId())
@@ -341,7 +351,17 @@ public class QueueService {
     @Scheduled(fixedRateString = "${clinic.priority-recalc-interval-seconds:60}000")
     @Transactional
     public void recalculateAllScores() {
-        log.info("Starting priority recalculation for active doctor queues");
+        // Cluster-wide leader lock — only one instance runs the recalc job.
+        // leaseTime = 55 s < schedule interval (60 s) to auto-release if the
+        // instance crashes mid-run before the next trigger fires.
+        lockService.executeWithLockIfAvailable("lock:recalc:priority", 55, () -> {
+            log.info("Starting priority recalculation for active doctor queues");
+            doRecalculateAllScores();
+            log.info("Completed priority recalculation");
+        });
+    }
+
+    private void doRecalculateAllScores() {
 
         List<Doctor> activeDoctors = doctorRepository.findByAvailableTrue();
 
@@ -386,7 +406,6 @@ public class QueueService {
                     doctorQueueService.buildDoctorQueueDTO(doctor.getId())
             );
         }
-        log.info("Completed priority recalculation");
     }
 
     public QueueStateDTO getQueueState(Long doctorId) {

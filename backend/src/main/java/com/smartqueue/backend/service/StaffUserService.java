@@ -174,11 +174,15 @@ public class StaffUserService implements UserDetailsService {
         }
 
         String normalized = rawRole.trim().toUpperCase();
+        if (normalized.startsWith("ROLE_")) {
+            normalized = normalized.substring(5);
+        }
+        
         if ("RECEPTION".equals(normalized)) {
             return "RECEPTIONIST";
         }
         if (!List.of("ADMIN", "DOCTOR", "RECEPTIONIST").contains(normalized)) {
-            throw new IllegalArgumentException("Invalid role");
+            throw new IllegalArgumentException("Invalid role. Must be one of: ADMIN, DOCTOR, RECEPTIONIST");
         }
         return normalized;
     }

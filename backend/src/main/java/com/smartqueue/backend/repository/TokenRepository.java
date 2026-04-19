@@ -29,6 +29,15 @@ public interface TokenRepository extends JpaRepository<Token, Long> {
             LocalDateTime time
     );
 
+    /** Used by starvation boost job to find long-waiting WAITING tokens. */
+    List<Token> findByStatusAndCreatedAtBefore(
+            TokenStatus status,
+            LocalDateTime time
+    );
+
+    /** Used by wait-time histogram job to sample all currently WAITING tokens. */
+    List<Token> findByStatus(TokenStatus status);
+
     List<Token> findByDoctorIdAndStatusOrderByPriorityScoreAsc(Long doctorId, TokenStatus status);
 
     @Query(value = """
@@ -54,7 +63,7 @@ public interface TokenRepository extends JpaRepository<Token, Long> {
             List<TokenStatus> statuses
     );
 
-    @Query("select t from Token t join fetch t.patient where t.id = :id")
+    @Query("select t from Token t left join fetch t.patient where t.id = :id")
     Optional<Token> findByIdWithPatient(@Param("id") Long id);
 
     @Query("select count(t) from Token t where t.createdAt >= :start and t.createdAt < :end")
