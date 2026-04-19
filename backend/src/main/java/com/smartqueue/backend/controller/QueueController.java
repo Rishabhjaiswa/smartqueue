@@ -25,17 +25,13 @@ public class QueueController {
             HttpSession session) {
         TokenResponse response = queueService.generateToken(request);
 
-        broadcastService.sendPrivateTokenConfirmation(
-                session.getId(), response
-        );
-
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/queue/{officeId}")
     public ResponseEntity<QueueStateDTO> getQueueState(
             @PathVariable Integer officeId) {
-        return ResponseEntity.ok(queueService.getQueueState(officeId));
+        return ResponseEntity.ok(queueService.getQueueState((long)officeId));
     }
 
     @PostMapping("/staff/next")

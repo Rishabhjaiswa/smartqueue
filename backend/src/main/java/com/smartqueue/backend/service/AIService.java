@@ -1,6 +1,7 @@
 package com.smartqueue.backend.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartqueue.backend.classifier.RuleBasedPreClassifier;
 import com.smartqueue.backend.dto.ChatRequest;
 import com.smartqueue.backend.dto.ChatResponse;
 import com.smartqueue.backend.dto.IntentDTO;
@@ -8,11 +9,31 @@ import com.smartqueue.backend.dto.TokenRequest;
 import com.smartqueue.backend.dto.TokenResponse;
 import com.smartqueue.backend.enums.PriorityFlag;
 import com.smartqueue.backend.enums.ServiceType;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.micrometer.core.annotation.Timed;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.ChatClient;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import com.smartqueue.backend.repository.PatientRepository;
+import com.smartqueue.backend.entity.Patient;
 
+import java.util.concurrent.CompletableFuture;
+
+/**
+ * AI-driven triage service.
+ *
+ * Request pipeline (in priority order):
+ *
+ *  1. RuleBasedPreClassifier — deterministic regex/keyword rules.
+ *     If confidence >= 0.85, skip Ollama entirely (saves ~2-4 s per request).
+ *
+ *  2. Ollama LLM call — wrapped in a Resilience4j circuit breaker.
+ *     If Ollama is down / slow, the circuit opens and falls back to step 3.
+ *
+ *  3. Rule-classifier fallback — same as step 1, used as circuit-breaker fallback.
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -21,56 +42,92 @@ public class AIService {
     private final ChatClient chatClient;
     private final QueueService queueService;
     private final ObjectMapper objectMapper;
+    private final RuleBasedPreClassifier preClassifier;
+    private final AuditLogService auditLogService;
+    private final PatientRepository patientRepository;
+
+    // Circuit breaker name must match resilience4j config in application.properties
+    private static final String CB_NAME = "ollama";
 
     private static final String SYSTEM_PROMPT = """
-        You are a JSON extraction bot for a government queue system.
+        You are a medical queue assistant for a clinic.
         
-        YOUR ONLY JOB: Read the citizen's message and output a single JSON object.
-        DO NOT output any text before the JSON.
-        DO NOT output any text after the JSON.
-        DO NOT use markdown code fences.
-        DO NOT explain your answer.
-        ONLY output the raw JSON object, nothing else.
+        YOUR ONLY JOB: Read the patient's message and output a single JSON object.
         
-        JSON schema (copy this structure exactly):
+        STRICT RULES:
+        - Output ONLY raw JSON
+        - No explanation
+        - No markdown
+        - No extra text
+        
+        JSON schema:
         {
           "serviceType": "",
           "priorityFlag": "",
           "language": "",
-          "confidence": ,
-          "clarificationNeeded": ,
+          "confidence": 0,
+          "clarificationNeeded": false,
           "clarificationQuestion": "",
           "replyMessage": ""
         }
         
-        Rules for serviceType:
-        - aadhaar/aadhar → AADHAAR_UPDATE
-        - pan → PAN_CARD
-        - passport → PASSPORT
-        - driving/license/licence/DL → DRIVING_LICENSE
-        - income/certificate → INCOME_CERTIFICATE
-        - unclear → OTHER with clarificationNeeded: true
+        Service mapping:
+        - general → GENERAL
+        - follow up → FOLLOW_UP
+        - specialist → SPECIALIST
+        - emergency → EMERGENCY
+        - lab/test → LAB
+        - unclear → OTHER (clarificationNeeded: true)
         
-        Rules for priorityFlag:
-        - senior/elderly/aged/60+/old age → SENIOR
-        - emergency/urgent/critical/accident → EMERGENCY
-        - anything else → NORMAL
+        Priority:
+        - emergency/urgent → EMERGENCY
+        - senior/elderly/60+ → SENIOR
+        - else → NORMAL
         
-        Rules for language:
-        - Hindi words or Devanagari script → hi
-        - Marathi words → mr
-        - English → en
-        
-        Set clarificationNeeded to true ONLY when serviceType would be OTHER.
-        If clarificationNeeded is true, write a helpful clarificationQuestion.
-        
-        REMEMBER: Output ONLY the JSON. No other text. Start your response with {
+        Return ONLY JSON.
         """;
 
+    @Timed(value = "smartqueue.ai.process", description = "End-to-end AI triage latency")
     public ChatResponse processMessage(ChatRequest request) {
         int officeId = request.getOfficeId() != null ? request.getOfficeId() : 1;
+        Patient patient = null;
+        if (request.getPatientId() != null) {
+            patient = patientRepository.findById(request.getPatientId()).orElse(null);
+        }
 
-        var queueState = queueService.getQueueState(officeId);
+        // ── Step 1: Rule-based pre-classifier ────────────────────────────────
+        RuleBasedPreClassifier.ClassificationResult preResult =
+                preClassifier.classify(request.getMessage());
+
+        if (preResult.confidence() >= 0.85) {
+            log.info("Rule classifier high-confidence hit ({}) — skipping Ollama",
+                    preResult.confidence());
+            return buildTokenResponse(preResult.serviceType(), preResult.priorityFlag(),
+                    request.getMessage(), officeId, null, patient);
+        }
+
+        // ── Step 2: Ollama LLM (with circuit breaker + fallback) ─────────────
+        return callOllamaWithCircuitBreaker(request, officeId, preResult, patient);
+    }
+
+    /**
+     * Async variant — runs triage on the dedicated {@code aiTriageExecutor} thread pool
+     * so Tomcat threads are never blocked waiting for Ollama.
+     *
+     * Usage: inject AIService and call {@code processMessageAsync(req).thenAccept(...)}
+     */
+    @Async("aiTriageExecutor")
+    @Timed(value = "smartqueue.ai.process.async", description = "Async AI triage latency")
+    public CompletableFuture<ChatResponse> processMessageAsync(ChatRequest request) {
+        return CompletableFuture.completedFuture(processMessage(request));
+    }
+
+    @CircuitBreaker(name = CB_NAME, fallbackMethod = "ollamaFallback")
+    @Timed(value = "smartqueue.ollama.call", description = "Ollama LLM call latency")
+    public ChatResponse callOllamaWithCircuitBreaker(ChatRequest request, int officeId,
+                                                      RuleBasedPreClassifier.ClassificationResult preResult,
+                                                      Patient patient) {
+        var queueState = queueService.getQueueState((long) officeId);
         String context = String.format(
                 "Queue context: %d people waiting, ~%d min estimated wait. ",
                 queueState.getWaitingCount(),
@@ -78,19 +135,18 @@ public class AIService {
         );
 
         String userMessage = context + "Citizen message: " + request.getMessage();
-
         IntentDTO intent = callOllama(userMessage);
 
-        if (intent == null) {
-            log.warn("Ollama parse failed, using keyword fallback");
-            return fallbackKeywordParse(request.getMessage(), officeId);
+        if (intent == null || intent.getConfidence() < 0.6) {
+            log.warn("Ollama confidence too low — falling back to rule classifier");
+            return buildFromPreClassifier(preResult, request.getMessage(), officeId, patient);
         }
 
         if (intent.isClarificationNeeded() || "OTHER".equals(intent.getServiceType())) {
             return ChatResponse.builder()
                     .botMessage(intent.getClarificationQuestion() != null
                             ? intent.getClarificationQuestion()
-                            : "Which service do you need? Aadhaar, PAN, Passport, Driving License, or Income Certificate?")
+                            : "Which consultation do you need? General, Follow-up, Specialist, Emergency, or Lab/Test.")
                     .tokenGenerated(false)
                     .needsClarification(true)
                     .clarificationQuestion(intent.getClarificationQuestion())
@@ -102,38 +158,66 @@ public class AIService {
         try {
             serviceType  = ServiceType.valueOf(intent.getServiceType().trim().toUpperCase());
             priorityFlag = PriorityFlag.valueOf(intent.getPriorityFlag().trim().toUpperCase());
-
-// 🔥 ADD THIS BLOCK (CRITICAL FIX)
-            String msg = request.getMessage().toLowerCase();
-
-// Senior override
-            if (msg.contains("senior") || msg.contains("elderly") || msg.contains("aged") || msg.contains("old")) {
-                priorityFlag = PriorityFlag.SENIOR;
-            }
-
-// Age-based override (60+)
-            if (msg.matches(".*\\b(6[0-9]|[7-9][0-9])\\b.*")) {
-                priorityFlag = PriorityFlag.SENIOR;
-            }
-
-// Emergency override (highest priority)
-            if (msg.contains("emergency") || msg.contains("urgent") || msg.contains("critical")) {
-                priorityFlag = PriorityFlag.EMERGENCY;
-            }
         } catch (IllegalArgumentException e) {
-            log.warn("Bad enum from Ollama: {} / {}", intent.getServiceType(), intent.getPriorityFlag());
-            return fallbackKeywordParse(request.getMessage(), officeId);
+            log.warn("Bad enum from Ollama: {} / {} — using rule fallback",
+                    intent.getServiceType(), intent.getPriorityFlag());
+            return buildFromPreClassifier(preResult, request.getMessage(), officeId, patient);
         }
 
+        return buildTokenResponse(serviceType, priorityFlag, request.getMessage(), officeId,
+                intent.getReplyMessage(), patient);
+    }
+
+    /**
+     * Resilience4j fallback — invoked when the circuit is OPEN or Ollama throws.
+     * Signature MUST match callOllamaWithCircuitBreaker + Throwable parameter.
+     */
+    @SuppressWarnings("unused")
+    public ChatResponse ollamaFallback(ChatRequest request, int officeId,
+                                        RuleBasedPreClassifier.ClassificationResult preResult,
+                                        Patient patient,
+                                        Throwable ex) {
+        log.warn("Ollama circuit breaker open — using rule fallback. Reason: {}", ex.getMessage());
+        // Persist fallback activation so ops can track Ollama health trends
+        auditLogService.log(
+                "AI_TRIAGE_FALLBACK",
+                "system",
+                String.format("Circuit breaker activated: %s | office=%s",
+                        ex.getMessage(),
+                        request.getOfficeId())
+        );
+        return buildFromPreClassifier(preResult, request.getMessage(), officeId, patient);
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private ChatResponse buildFromPreClassifier(RuleBasedPreClassifier.ClassificationResult result,
+                                                 String rawMessage, int officeId, Patient patient) {
+        if (result.serviceType() == ServiceType.OTHER) {
+            String clarificationQ = "Which consultation do you need? General, Follow-up, Specialist, Emergency, or Lab/Test.";
+            return ChatResponse.builder()
+                    .botMessage(clarificationQ)
+                    .tokenGenerated(false)
+                    .needsClarification(true)
+                    .clarificationQuestion(clarificationQ)
+                    .build();
+        }
+        return buildTokenResponse(result.serviceType(), result.priorityFlag(), rawMessage, officeId, null, patient);
+    }
+
+    private ChatResponse buildTokenResponse(ServiceType serviceType, PriorityFlag priorityFlag,
+                                             String rawMessage, int officeId, String ollamaReply, Patient patient) {
         TokenRequest tokenRequest = new TokenRequest();
         tokenRequest.setServiceType(serviceType);
         tokenRequest.setPriorityFlag(priorityFlag);
         tokenRequest.setOfficeId(officeId);
+        tokenRequest.setSeverityScore(defaultSeverity(priorityFlag));
+        tokenRequest.setChiefComplaint(rawMessage);
 
-        TokenResponse tokenResponse = queueService.generateToken(tokenRequest);
+        TokenResponse tokenResponse = queueService.generateToken(tokenRequest, patient);
 
-        String botMsg = (intent.getReplyMessage() != null && !intent.getReplyMessage().isBlank())
-                ? intent.getReplyMessage() + " Token: " + tokenResponse.getTokenNumber()
+        String botMsg = (ollamaReply != null && !ollamaReply.isBlank())
+                ? ollamaReply + " Token: " + tokenResponse.getTokenNumber()
                   + ", Position: #" + tokenResponse.getPositionInQueue()
                   + ", Est. wait: ~" + tokenResponse.getEstimatedWaitMinutes() + " min."
                 : "Your token is " + tokenResponse.getTokenNumber()
@@ -151,75 +235,36 @@ public class AIService {
     private IntentDTO callOllama(String userMessage) {
         try {
             String raw = chatClient.call(SYSTEM_PROMPT + "\n\n" + userMessage);
-
             log.debug("Ollama raw response: {}", raw);
 
-            String cleaned = raw.trim();
-
-            cleaned = cleaned.replaceAll("(?s)```json\\s*", "");
-            cleaned = cleaned.replaceAll("```", "");
-            cleaned = cleaned.trim();
+            String cleaned = raw.trim()
+                    .replace("```json", "")
+                    .replace("```", "");
 
             int start = cleaned.indexOf('{');
             int end   = cleaned.lastIndexOf('}');
+
             if (start == -1 || end == -1 || end <= start) {
                 log.warn("No JSON object found in Ollama response: {}", cleaned);
                 return null;
             }
-            cleaned = cleaned.substring(start, end + 1);
 
-            return objectMapper.readValue(cleaned, IntentDTO.class);
-
+            return objectMapper.readValue(cleaned.substring(start, end + 1), IntentDTO.class);
         } catch (Exception e) {
-            log.error("Ollama call failed: {}", e.getMessage());
+            log.error("Ollama call failed", e);
             return null;
         }
     }
 
-    private ChatResponse fallbackKeywordParse(String message, int officeId) {
-        log.info("Keyword fallback triggered for: {}", message);
-        String lower = message.toLowerCase();
-
-        ServiceType serviceType = ServiceType.OTHER;
-        if (lower.contains("aadhaar") || lower.contains("aadhar"))      serviceType = ServiceType.AADHAAR_UPDATE;
-        else if (lower.contains("pan"))                                  serviceType = ServiceType.PAN_CARD;
-        else if (lower.contains("passport"))                             serviceType = ServiceType.PASSPORT;
-        else if (lower.contains("driving") || lower.contains("license")
-                || lower.contains("licence") || lower.contains("dl"))     serviceType = ServiceType.DRIVING_LICENSE;
-        else if (lower.contains("income") || lower.contains("certificate")) serviceType = ServiceType.INCOME_CERTIFICATE;
-
-        if (serviceType == ServiceType.OTHER) {
-            return ChatResponse.builder()
-                    .botMessage("Which service do you need? Please say: Aadhaar update, PAN card, passport, driving license, or income certificate.")
-                    .tokenGenerated(false)
-                    .needsClarification(true)
-                    .build();
-        }
-
-        PriorityFlag priorityFlag = PriorityFlag.NORMAL;
-        if (lower.contains("senior") || lower.contains("elderly") || lower.contains("aged") || lower.contains("old")
-                || lower.matches(".*\\b(6[0-9]|[7-9][0-9])\\b.*")) {
-            priorityFlag = PriorityFlag.SENIOR;
-        }
-        if (lower.contains("emergency") || lower.contains("urgent"))
-            priorityFlag = PriorityFlag.EMERGENCY;
-
-        TokenRequest tokenRequest = new TokenRequest();
-        tokenRequest.setServiceType(serviceType);
-        tokenRequest.setPriorityFlag(priorityFlag);
-        tokenRequest.setOfficeId(officeId);
-
-        TokenResponse tokenResponse = queueService.generateToken(tokenRequest);
-
-        return ChatResponse.builder()
-                .botMessage("Your token is " + tokenResponse.getTokenNumber()
-                        + ". Position: #" + tokenResponse.getPositionInQueue()
-                        + ". Est. wait: ~" + tokenResponse.getEstimatedWaitMinutes() + " min.")
-                .tokenGenerated(true)
-                .tokenData(tokenResponse)
-                .build();
+    private int defaultSeverity(PriorityFlag flag) {
+        return switch (flag) {
+            case EMERGENCY -> 10;
+            case SENIOR    -> 7;
+            default        -> 5;
+        };
     }
+
     public com.smartqueue.backend.dto.QueueStateDTO getQueueStateForTelegram(int officeId) {
-        return queueService.getQueueState(officeId);
+        return queueService.getQueueState((long) officeId);
     }
 }

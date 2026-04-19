@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: smartqueue-local
+
+scrape_configs:
+  # ── SmartQueue Spring Boot backend ──────────────────────────────────────────
+  - job_name: smartqueue-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - backend:8080
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  # ── Prometheus self-monitoring ───────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

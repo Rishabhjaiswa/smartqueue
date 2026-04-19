@@ -1,0 +1,183 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SmartQueue — full local stack
+#
+# Usage:
+#   docker compose up -d            # start everything
+#   docker compose up -d backend    # start infra + backend only
+#   docker compose logs -f backend  # tail logs
+#   docker compose down -v          # wipe volumes
+#
+# Ports exposed on localhost:
+#   5432  → PostgreSQL
+#   6379  → Redis
+#   8080  → Spring Boot backend   (also :8080/actuator/prometheus)
+#   3000  → React frontend
+#   11434 → Ollama LLM
+#   9090  → Prometheus
+#   3001  → Grafana  (admin / admin)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: smartqueue-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: smartqueue
+      POSTGRES_USER: ${DB_USERNAME:-smartqueue}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-smartqueue}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-smartqueue} -d smartqueue"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: smartqueue-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Ollama: serves the llama3 model locally.
+  # On first run, pull the model:  docker exec smartqueue-ollama ollama pull llama3
+  ollama:
+    image: ollama/ollama:latest
+    container_name: smartqueue-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    # GPU passthrough (uncomment if NVIDIA GPU is available):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ── Application ─────────────────────────────────────────────────────────────
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smartqueue-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      # ── Database
+      DB_URL: jdbc:postgresql://postgres:5432/smartqueue
+      DB_USERNAME: ${DB_USERNAME:-smartqueue}
+      DB_PASSWORD: ${DB_PASSWORD:-smartqueue}
+      # ── Redis / Redisson
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # ── Ollama
+      SPRING_AI_OLLAMA_BASE_URL: http://ollama:11434
+      # ── CORS (React dev server)
+      APP_CORS_ALLOWED_ORIGINS: http://localhost:3000
+      # ── Observability
+      APP_ENV: docker
+      # ── AI async thread pool (tune for your hardware)
+      AI_EXECUTOR_CORE: 4
+      AI_EXECUTOR_MAX: 16
+      AI_EXECUTOR_QUEUE: 50
+      # ── Clinic scheduling parameters
+      STARVATION_SCORE_REDUCTION: 500000
+      CLINIC_OPEN_HOUR: 0
+      CLINIC_CLOSE_HOUR: 23
+      # ── Misc
+      SMARTQUEUE_RESET_ON_STARTUP: "false"
+      ENABLE_AUTO_REBALANCE: "true"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 120s
+
+  frontend:
+    build:
+      context: ./smartqueue-frontend
+      dockerfile: Dockerfile
+    container_name: smartqueue-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      REACT_APP_API_BASE_URL: http://localhost:8080
+      REACT_APP_WS_BASE_URL: ws://localhost:8080
+    ports:
+      - "3000:80"
+
+  # ── Observability ────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: smartqueue-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: smartqueue-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_models:
+  grafana_data:
