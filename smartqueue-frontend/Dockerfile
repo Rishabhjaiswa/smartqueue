@@ -17,8 +17,8 @@ RUN npm ci --silent
 COPY . .
 
 # Build-time env vars — injected from docker-compose environment
-ARG REACT_APP_API_BASE_URL=http://localhost:8080
-ARG REACT_APP_WS_BASE_URL=ws://localhost:8080
+ARG REACT_APP_API_BASE_URL
+ARG REACT_APP_WS_BASE_URL
 ENV REACT_APP_API_BASE_URL=$REACT_APP_API_BASE_URL
 ENV REACT_APP_WS_BASE_URL=$REACT_APP_WS_BASE_URL
 
