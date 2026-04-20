@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
@@ -45,7 +46,7 @@ class IdempotencyServiceTest {
 
     @BeforeEach
     void setUp() {
-        idempotencyService = new IdempotencyService(redisTemplate, objectMapper);
+        idempotencyService = new IdempotencyService(Optional.of(redisTemplate), objectMapper);
         lenient().when(redisTemplate.opsForValue()).thenReturn(valueOps);
     }
 
@@ -116,7 +117,7 @@ class IdempotencyServiceTest {
             // ObjectMapper cannot serialise a raw Object with circular refs —
             // we simulate this by using a spy that throws
             ObjectMapper faultyMapper = spy(new ObjectMapper());
-            IdempotencyService faultyService = new IdempotencyService(redisTemplate, faultyMapper);
+            IdempotencyService faultyService = new IdempotencyService(Optional.of(redisTemplate), faultyMapper);
 
             // Create an object that cannot be serialised
             Object unserializable = new Object() {

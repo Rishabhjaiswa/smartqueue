@@ -38,6 +38,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @Slf4j
@@ -49,7 +50,7 @@ public class TelegramWebhookController{
     private final DoctorQueueService doctorQueueService;
     private final PatientRepository patientRepository;
     private final TokenRepository tokenRepository;
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final ObjectMapper objectMapper;
     private final AIService aiService;
     private final DoctorRepository doctorRepository;
@@ -554,7 +555,8 @@ public class TelegramWebhookController{
 
     private IntakeSession loadSession(Long chatId) {
         try {
-            String raw = redisTemplate.opsForValue().get(sessionKey(chatId));
+            if (redisTemplate.isEmpty()) return null;
+            String raw = redisTemplate.get().opsForValue().get(sessionKey(chatId));
             if (raw == null || raw.isBlank()) {
                 return null;
             }
@@ -566,8 +568,9 @@ public class TelegramWebhookController{
     }
 
     private void saveSession(Long chatId, IntakeSession session) {
+        if (redisTemplate.isEmpty()) return;
         try {
-            redisTemplate.opsForValue().set(
+            redisTemplate.get().opsForValue().set(
                     sessionKey(chatId),
                     objectMapper.writeValueAsString(session),
                     Duration.ofMinutes(telegramSessionTtlMinutes)

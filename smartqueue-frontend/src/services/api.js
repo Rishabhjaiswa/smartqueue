@@ -1,10 +1,22 @@
 import axios from "axios";
 
-const BASE = process.env.REACT_APP_API_URL || "";
+const BASE = process.env.REACT_APP_API_BASE_URL;
+
+if (!BASE) {
+    document.body.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>Configuration Error: REACT_APP_API_BASE_URL is missing</h1>";
+    throw new Error("REACT_APP_API_BASE_URL environment variable is missing. Deployment failed.");
+}
 
 const api = axios.create({
     baseURL: BASE,
-    withCredentials: true,
+});
+
+api.interceptors.request.use((config) => {
+    const token = localStorage.getItem("token");
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
 });
 
 let redirectedToLogin = false;
@@ -17,9 +29,17 @@ api.interceptors.response.use(
             const isLoginPage = window.location.pathname === "/login";
             if (!isLoginPage && !redirectedToLogin) {
                 redirectedToLogin = true;
+                localStorage.removeItem("token");
+                localStorage.removeItem("role");
                 sessionStorage.setItem("authMessage", "Session expired. Please login again");
                 window.location.assign("/login");
             }
+        } else if (err.response?.status === 403) {
+            console.error("Access Denied: You do not have permission to perform this action.");
+            window.dispatchEvent(new CustomEvent("api-error-403", { detail: err.response.data }));
+        } else if (!err.response) {
+            console.error("Network Error: Unable to connect to the server.");
+            window.dispatchEvent(new CustomEvent("api-network-error"));
         }
         console.error("API ERROR:", err.response || err);
         return Promise.reject(err);
@@ -30,15 +50,7 @@ api.interceptors.response.use(
 // 🔐 AUTH
 // ======================
 export const login = (username, password) =>
-    api.post(
-        "/api/auth/login",
-        new URLSearchParams({ username, password }),
-        {
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        }
-    );
+    api.post("/api/auth/login", { username, password });
 
 export const getDoctorQueue = () =>
     api.get("/api/doctor/queue");
@@ -46,7 +58,11 @@ export const getDoctorQueue = () =>
 export const reassignDoctor = (tokenId, doctorId) =>
     api.put(`/api/reception/token/${tokenId}/doctor/${doctorId}`);
 
-export const logout = () => api.post("/api/auth/logout");
+export const logout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("role");
+    return Promise.resolve();
+};
 
 export const getMe = () => api.get("/api/auth/me");
 export const createStaff = (data) => api.post("/api/admin/create-staff", data);

@@ -18,7 +18,9 @@ import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -50,7 +52,7 @@ class ClinicScheduledJobsTest {
     void setUp() {
         meterRegistry = new SimpleMeterRegistry();
         jobs = new ClinicScheduledJobs(
-                tokenRepository, redisTemplate, broadcastService,
+                tokenRepository, Optional.of(redisTemplate), broadcastService,
                 doctorQueueService, lockService, meterRegistry
         );
         // Inject @Value fields

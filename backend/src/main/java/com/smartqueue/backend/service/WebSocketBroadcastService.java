@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * WebSocket broadcast service — now routes all messages through Redis Pub/Sub.
@@ -28,7 +29,7 @@ import java.util.Map;
 @Slf4j
 public class WebSocketBroadcastService {
 
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final ObjectMapper objectMapper;
 
     // ── Channel-name helpers ─────────────────────────────────────────────────
@@ -67,9 +68,13 @@ public class WebSocketBroadcastService {
     // ── Internal Pub/Sub publisher ────────────────────────────────────────────
 
     private void publish(String channel, Object payload) {
+        if (redisTemplate.isEmpty()) {
+            log.warn("Redis disabled: Bypassing WebSocket broadcast to {}", channel);
+            return;
+        }
         try {
             String json = objectMapper.writeValueAsString(payload);
-            redisTemplate.convertAndSend(channel, json);
+            redisTemplate.get().convertAndSend(channel, json);
         } catch (JsonProcessingException e) {
             log.error("Failed to serialize WebSocket payload for channel {}: {}", channel, e.getMessage());
         }

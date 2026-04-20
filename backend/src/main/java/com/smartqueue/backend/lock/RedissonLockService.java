@@ -7,7 +7,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -30,20 +32,21 @@ import java.util.function.Supplier;
 @Slf4j
 public class RedissonLockService {
 
-    private final RedissonClient redissonClient;
+    private final Optional<RedissonClient> redissonClient;
     private final MeterRegistry meterRegistry;
 
-    /**
-     * Executes {@code action} while holding the distributed lock for {@code lockKey}.
-     *
-     * @param lockKey   Redis key for the lock (e.g. "queue-insert:doctor:1")
-     * @param waitMs    Max milliseconds to wait for lock acquisition
-     * @param action    Business logic to run under the lock
-     * @return          Result of action
-     * @throws LockAcquisitionException if lock cannot be acquired within waitMs
-     */
+    @Value("${app.redis.required:false}")
+    private boolean redisRequired;
+
     public <T> T executeWithLock(String lockKey, long waitMs, Supplier<T> action) {
-        RLock lock = redissonClient.getLock(lockKey);
+        if (redissonClient.isEmpty()) {
+            if (redisRequired) {
+                throw new IllegalStateException("Redis required but not available. Cannot execute lock for: " + lockKey);
+            }
+            log.warn("Redis disabled: Bypassing distributed lock for {}", lockKey);
+            return action.get();
+        }
+        RLock lock = redissonClient.get().getLock(lockKey);
         Timer.Sample sample = Timer.start(meterRegistry);
 
         try {
@@ -93,7 +96,15 @@ public class RedissonLockService {
      * @param action       Job logic to run only by the lock winner
      */
     public void executeWithLockIfAvailable(String lockKey, long leaseSecs, Runnable action) {
-        RLock lock = redissonClient.getLock(lockKey);
+        if (redissonClient.isEmpty()) {
+            if (redisRequired) {
+                throw new IllegalStateException("Redis required but not available. Cannot execute lock for: " + lockKey);
+            }
+            log.warn("Redis disabled: Bypassing scheduled job lock for {}", lockKey);
+            action.run();
+            return;
+        }
+        RLock lock = redissonClient.get().getLock(lockKey);
         try {
             boolean acquired = lock.tryLock(0, leaseSecs, TimeUnit.SECONDS);
             if (!acquired) {

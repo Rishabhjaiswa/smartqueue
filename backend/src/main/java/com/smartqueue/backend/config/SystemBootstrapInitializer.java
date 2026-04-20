@@ -14,6 +14,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 @Component
@@ -24,8 +25,11 @@ public class SystemBootstrapInitializer implements CommandLineRunner {
     private final DoctorRepository doctorRepository;
     private final StaffUserRepository staffUserRepository;
     private final PasswordEncoder passwordEncoder;
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final StaffUserService staffUserService;
+
+    @Value("${app.redis.required:false}")
+    private boolean redisRequired;
 
     @Value("${smartqueue.reset-on-startup:false}")
     private boolean resetOnStartup;
@@ -41,6 +45,15 @@ public class SystemBootstrapInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
+        if (redisRequired && redisTemplate.isEmpty()) {
+            throw new IllegalStateException("Redis required but not available");
+        }
+
+        if (redisTemplate.isPresent()) {
+            log.info("Redis status: CONNECTED");
+        } else {
+            log.warn("Redis status: DISABLED (running in degraded mode)");
+        }
 
         System.out.println(
                 new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder()
@@ -113,10 +126,14 @@ public class SystemBootstrapInitializer implements CommandLineRunner {
     }
 
     private void clearRedisKeys(String pattern) {
+        if (redisTemplate.isEmpty()) {
+            log.warn("Redis is disabled, skipping key clearance for: {}", pattern);
+            return;
+        }
         try {
-            Set<String> keys = redisTemplate.keys(pattern);
+            Set<String> keys = redisTemplate.get().keys(pattern);
             if (keys != null && !keys.isEmpty()) {
-                redisTemplate.delete(keys);
+                redisTemplate.get().delete(keys);
             }
         } catch (Exception e) {
             log.warn("Unable to clear Redis keys for pattern {}: {}", pattern, e.getMessage());
