@@ -14,27 +14,39 @@ import org.springframework.context.annotation.Configuration;
  * Redisson operates independently on its own connection pool so there is
  * no conflict with the existing RedisTemplate.
  */
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+
 @Configuration
+@ConditionalOnProperty(name = "REDIS_URL")
 public class RedissonConfig {
 
-    @Value("${spring.data.redis.host:localhost}")
-    private String redisHost;
+    @Value("${REDIS_URL}")
+    private String redisUrl;
 
-    @Value("${spring.data.redis.port:6379}")
-    private int redisPort;
-
-    @Value("${spring.data.redis.password:}")
+    @Value("${REDIS_PASSWORD:}")
     private String redisPassword;
 
     @Bean(destroyMethod = "shutdown")
     public RedissonClient redissonClient() {
         Config config = new Config();
-        config.useSingleServer()
-                .setAddress("rediss://" + redisHost + ":" + redisPort)
-                .setPassword(redisPassword)
+        org.redisson.config.SingleServerConfig serverConfig = config.useSingleServer()
+                .setAddress(redisUrl)
+                .setTimeout(5000)
+                .setRetryAttempts(5)
+                .setRetryInterval(2000)
+                .setPingConnectionInterval(2000)
                 .setKeepAlive(true)
                 .setConnectionMinimumIdleSize(2)
-                .setConnectionPoolSize(4);
+                .setConnectionPoolSize(10);
+
+        if (redisPassword != null && !redisPassword.isEmpty()) {
+            serverConfig.setPassword(redisPassword);
+        }
+
+        if (redisUrl.startsWith("rediss://")) {
+            serverConfig.setSslEnableEndpointIdentification(false);
+        }
+
         return Redisson.create(config);
     }
 }

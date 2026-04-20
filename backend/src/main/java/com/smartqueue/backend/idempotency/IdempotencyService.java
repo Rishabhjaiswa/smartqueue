@@ -7,7 +7,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import java.time.Duration;
+import java.util.Optional;
 
 /**
  * Redis-backed idempotency guard for token generation.
@@ -37,11 +40,25 @@ public class IdempotencyService {
     private static final String PREFIX = "idem:";
     private static final Duration DEFAULT_TTL = Duration.ofMinutes(10);
 
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final ObjectMapper objectMapper;
 
+    @Value("${app.redis.required:false}")
+    private boolean redisRequired;
+
+    private void checkRedisRequired(String operation) {
+        if (redisTemplate.isEmpty()) {
+            if (redisRequired) {
+                throw new IllegalStateException("Redis required for this operation: " + operation);
+            }
+            log.warn("Redis unavailable - falling back for operation: {}", operation);
+        }
+    }
+
     public boolean exists(String correlationId) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(PREFIX + correlationId));
+        checkRedisRequired("idempotency-exists");
+        if (redisTemplate.isEmpty()) return false;
+        return Boolean.TRUE.equals(redisTemplate.get().hasKey(PREFIX + correlationId));
     }
 
     public <T> void store(String correlationId, T result) {
@@ -49,18 +66,20 @@ public class IdempotencyService {
     }
 
     public <T> void store(String correlationId, T result, Duration ttl) {
+        checkRedisRequired("idempotency-store");
+        if (redisTemplate.isEmpty()) return;
         try {
             String json = objectMapper.writeValueAsString(result);
-            redisTemplate.opsForValue().set(PREFIX + correlationId, json, ttl);
+            redisTemplate.get().opsForValue().set(PREFIX + correlationId, json, ttl);
         } catch (JsonProcessingException e) {
-            // Non-fatal: worst case is a duplicate on Kafka redelivery.
-            // Better to continue than to block the patient.
             log.warn("Failed to store idempotency result for correlationId={}: {}", correlationId, e.getMessage());
         }
     }
 
     public <T> T getResult(String correlationId, Class<T> type) {
-        String raw = redisTemplate.opsForValue().get(PREFIX + correlationId);
+        checkRedisRequired("idempotency-getResult");
+        if (redisTemplate.isEmpty()) return null;
+        String raw = redisTemplate.get().opsForValue().get(PREFIX + correlationId);
         if (raw == null) return null;
         try {
             return objectMapper.readValue(raw, type);

@@ -10,6 +10,8 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.listener.adapter.MessageListenerAdapter;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+
 /**
  * Redis configuration for SmartQueue.
  *
@@ -20,6 +22,7 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
  *     This is the fix for WebSocket fan-out across multiple JVM instances.
  */
 @Configuration
+@ConditionalOnProperty(name = "REDIS_URL")
 public class RedisConfig {
 
     // ── 1. RedisTemplate (unchanged behaviour) ─────────────────────────────────

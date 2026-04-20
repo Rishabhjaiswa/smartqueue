@@ -17,7 +17,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Scheduled housekeeping jobs.
@@ -32,7 +34,7 @@ import java.util.List;
 public class ClinicScheduledJobs {
 
     private final TokenRepository tokenRepository;
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
     private final DoctorQueueService doctorQueueService;
     private final RedissonLockService lockService;
@@ -46,6 +48,20 @@ public class ClinicScheduledJobs {
 
     @Value("${clinic.starvation-score-reduction:500000}")
     private long starvationScoreReduction;
+
+    @Value("${app.redis.required:false}")
+    private boolean redisRequired;
+
+    private boolean isRedisAvailable(String operationName, boolean isCritical) {
+        if (redisTemplate.isEmpty()) {
+            if (isCritical && redisRequired) {
+                throw new IllegalStateException("Redis required for this operation: " + operationName);
+            }
+            log.warn("Redis unavailable - falling back for operation: {}", operationName);
+            return false;
+        }
+        return true;
+    }
 
     private static final String QUEUE_KEY = "queue:doctor:";
 
@@ -115,10 +131,12 @@ public class ClinicScheduledJobs {
                 token.setStatus(TokenStatus.EXPIRED);
                 tokenRepository.save(token);
 
-                redisTemplate.opsForZSet().remove(
-                        "queue:doctor:" + token.getDoctorId(),
-                        token.getId().toString()
-                );
+                if (isRedisAvailable("autoExpire", true)) {
+                    redisTemplate.get().opsForZSet().remove(
+                            "queue:doctor:" + token.getDoctorId(),
+                            token.getId().toString()
+                    );
+                }
 
                 broadcastService.broadcastDoctorQueue(
                         token.getDoctorId(),
@@ -148,14 +166,16 @@ public class ClinicScheduledJobs {
         for (Token token : longWaiting) {
             try {
                 String key = QUEUE_KEY + token.getDoctorId();
-                Double currentScore = redisTemplate.opsForZSet()
-                        .score(key, token.getId().toString());
+                Double currentScore = isRedisAvailable("starvationBoost-read", false) ? redisTemplate.get().opsForZSet()
+                        .score(key, token.getId().toString()) : null;
 
                 if (currentScore == null) continue;  // already removed (called/expired)
 
                 // Boost: lower score = higher priority. Floor at 1 to avoid negatives.
                 long boostedScore = Math.max(1L, currentScore.longValue() - starvationScoreReduction);
-                redisTemplate.opsForZSet().add(key, token.getId().toString(), boostedScore);
+                if (isRedisAvailable("starvationBoost-write", true)) {
+                    redisTemplate.get().opsForZSet().add(key, token.getId().toString(), boostedScore);
+                }
 
                 token.setDynamicScore(boostedScore);
                 token.setLastScoreUpdate(LocalDateTime.now());

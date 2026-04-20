@@ -2,7 +2,12 @@ import SockJS from "sockjs-client";
 import { Client } from "@stomp/stompjs";
 
 let stompClient = null;
-const SOCKET_BASE = (process.env.REACT_APP_API_URL || "http://localhost:8080").replace(/\/$/, "");
+const rawBase = process.env.REACT_APP_API_BASE_URL;
+if (!rawBase) {
+    document.body.innerHTML = "<h1 style='color:red; text-align:center; margin-top:20%; font-family:sans-serif;'>Configuration Error: REACT_APP_API_BASE_URL is missing</h1>";
+    throw new Error("REACT_APP_API_BASE_URL environment variable is missing.");
+}
+const SOCKET_BASE = rawBase.replace(/\/$/, "");
 
 export const connectSocket = (doctorId, onMessage) => {
     if (stompClient) {

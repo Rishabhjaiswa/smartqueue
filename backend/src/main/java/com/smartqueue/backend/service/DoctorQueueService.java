@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import java.util.Optional;
 
 import java.time.Duration;
 import java.time.LocalDate;
@@ -31,7 +32,7 @@ import java.util.concurrent.*;
 @Slf4j
 public class DoctorQueueService {
 
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final TokenRepository tokenRepository;
     private final WebSocketBroadcastService broadcastService;
     private final WaitTimeEstimator waitTimeEstimator;
@@ -45,6 +46,20 @@ public class DoctorQueueService {
 
     @Value("${smartqueue.enable-auto-rebalance:true}")
     private boolean enableAutoRebalance;
+
+    @Value("${app.redis.required:false}")
+    private boolean redisRequired;
+
+    private boolean isRedisAvailable(String operationName, boolean isCritical) {
+        if (redisTemplate.isEmpty()) {
+            if (isCritical && redisRequired) {
+                throw new IllegalStateException("Redis required for this operation: " + operationName);
+            }
+            log.warn("Redis unavailable - falling back for operation: {}", operationName);
+            return false;
+        }
+        return true;
+    }
 
     private static final int AUTO_START_DELAY_SECONDS = 10;
     private static final int EXTEND_MINUTES = 5;
@@ -77,8 +92,14 @@ public class DoctorQueueService {
         // Get first token from Redis (lowest score = highest priority)
         Set<String> top;
 
+        if (!isRedisAvailable("callNext-range", false)) {
+            return TokenResponse.builder()
+                    .message("Redis not available / Queue empty")
+                    .build();
+        }
+
         try {
-            top = redisTemplate.opsForZSet().range(key, 0, 0);
+            top = redisTemplate.get().opsForZSet().range(key, 0, 0);
         } catch (Exception e) {
             return TokenResponse.builder()
                     .message("Redis not available / Queue empty")
@@ -97,7 +118,9 @@ public class DoctorQueueService {
         try {
             tokenId = Long.parseLong(tokenIdStr);
         } catch (NumberFormatException e) {
-            redisTemplate.opsForZSet().remove(key, tokenIdStr);
+            if (isRedisAvailable("callNext-remove-invalid", true)) {
+                redisTemplate.get().opsForZSet().remove(key, tokenIdStr);
+            }
             return TokenResponse.builder()
                     .message("Invalid token entry in queue")
                     .build();
@@ -107,21 +130,26 @@ public class DoctorQueueService {
                 .orElse(null);
 
         if (token == null) {
-            redisTemplate.opsForZSet().remove(key, tokenIdStr);
+            if (isRedisAvailable("callNext-remove-notfound", true)) {
+                redisTemplate.get().opsForZSet().remove(key, tokenIdStr);
+            }
             return TokenResponse.builder()
                     .message("Token not found")
                     .build();
         }
 
         if (token.getStatus() != TokenStatus.WAITING) {
-            redisTemplate.opsForZSet().remove(key, tokenIdStr);
+            if (isRedisAvailable("callNext-remove-notwaiting", true)) {
+                redisTemplate.get().opsForZSet().remove(key, tokenIdStr);
+            }
             return TokenResponse.builder()
                     .message("Only WAITING tokens can be called")
                     .build();
         }
 
-        // Remove from queue
-        redisTemplate.opsForZSet().remove(key, tokenIdStr);
+        if (isRedisAvailable("callNext-remove-success", true)) {
+            redisTemplate.get().opsForZSet().remove(key, tokenIdStr);
+        }
 
         // Update status and start consultation immediately
         token.setStatus(TokenStatus.IN_CONSULTATION);
@@ -226,13 +254,14 @@ public class DoctorQueueService {
 
         tokenRepository.save(token);
 
-        // ✅ REMOVE FROM REDIS (IMPORTANT)
-        try {
-            redisTemplate.opsForZSet().remove(
-                    "queue:doctor:" + doctorId,
-                    tokenId.toString()
-            );
-        } catch (Exception ignored) {
+        if (isRedisAvailable("completeConsultation-remove", true)) {
+            try {
+                redisTemplate.get().opsForZSet().remove(
+                        "queue:doctor:" + doctorId,
+                        tokenId.toString()
+                );
+            } catch (Exception ignored) {
+            }
         }
 
         if (token.getPatient() != null && token.getPatient().getTelegramChatId() != null) {
@@ -274,11 +303,15 @@ public class DoctorQueueService {
 
         // ✅ Get all tokens from Redis
         Set<String> tokenIds;
-        try {
-            tokenIds = redisTemplate.opsForZSet()
-                    .range(key, 0, -1);
-        } catch (Exception e) {
+        if (!isRedisAvailable("buildDoctorQueueDTO-range", false)) {
             tokenIds = java.util.Collections.emptySet();
+        } else {
+            try {
+                tokenIds = redisTemplate.get().opsForZSet()
+                        .range(key, 0, -1);
+            } catch (Exception e) {
+                tokenIds = java.util.Collections.emptySet();
+            }
         }
 
         if (tokenIds == null || tokenIds.isEmpty()) {
@@ -468,7 +501,9 @@ public class DoctorQueueService {
 
         String fromKey = "queue:doctor:" + fromDoctorId;
 
-        Set<String> tokens = redisTemplate.opsForZSet()
+        if (!isRedisAvailable("redistributeQueue-range", false)) return;
+
+        Set<String> tokens = redisTemplate.get().opsForZSet()
                 .range(fromKey, 0, -1);
 
         if (tokens == null || tokens.isEmpty()) return;
@@ -495,15 +530,16 @@ public class DoctorQueueService {
             token.setDoctorId(toDoctorId);
             tokenRepository.save(token);
 
-            // 🔥 STEP 3: Move Redis (preserve score)
-            Double score = redisTemplate.opsForZSet()
-                    .score(fromKey, tokenIdStr);
+            if (isRedisAvailable("redistributeQueue-move", true)) {
+                Double score = redisTemplate.get().opsForZSet()
+                        .score(fromKey, tokenIdStr);
 
-            if (score != null) {
-                redisTemplate.opsForZSet().add(toKey, tokenIdStr, score);
+                if (score != null) {
+                    redisTemplate.get().opsForZSet().add(toKey, tokenIdStr, score);
+                }
+
+                redisTemplate.get().opsForZSet().remove(fromKey, tokenIdStr);
             }
-
-            redisTemplate.opsForZSet().remove(fromKey, tokenIdStr);
         }
 
         // 🔥 STEP 4: Broadcast for ALL doctors
@@ -602,10 +638,12 @@ public class DoctorQueueService {
                 .map(Doctor::getId)
                 .toList();
 
+        if (!isRedisAvailable("rebalanceAvailableQueues", true)) return;
+
         List<Token> waitingTokens = new ArrayList<>();
         for (Long doctorId : doctorIds) {
             String key = "queue:doctor:" + doctorId;
-            Set<String> tokenIds = redisTemplate.opsForZSet().range(key, 0, -1);
+            Set<String> tokenIds = redisTemplate.get().opsForZSet().range(key, 0, -1);
             if (tokenIds == null || tokenIds.isEmpty()) {
                 continue;
             }
@@ -621,7 +659,7 @@ public class DoctorQueueService {
                 }
             }
 
-            redisTemplate.delete(key);
+            redisTemplate.get().delete(key);
         }
 
         waitingTokens.stream()
@@ -647,7 +685,7 @@ public class DoctorQueueService {
                     }
 
                     try {
-                        redisTemplate.opsForZSet().add(
+                        redisTemplate.get().opsForZSet().add(
                                 "queue:doctor:" + newDoctorId,
                                 token.getId().toString(),
                                 token.getPriorityScore()
@@ -718,8 +756,9 @@ public class DoctorQueueService {
     }
 
     private long getQueueSize(Long doctorId) {
+        if (!isRedisAvailable("getQueueSize", false)) return 0L;
         try {
-            Long queueSize = redisTemplate.opsForZSet().zCard("queue:doctor:" + doctorId);
+            Long queueSize = redisTemplate.get().opsForZSet().zCard("queue:doctor:" + doctorId);
             return queueSize != null ? queueSize : 0L;
         } catch (Exception e) {
             return 0L;
@@ -789,8 +828,9 @@ public class DoctorQueueService {
     }
 
     private void notifyUpcomingPatient(Long doctorId) {
+        if (!isRedisAvailable("notifyUpcomingPatient", false)) return;
         try {
-            Set<String> nextTokens = redisTemplate.opsForZSet().range("queue:doctor:" + doctorId, 0, 0);
+            Set<String> nextTokens = redisTemplate.get().opsForZSet().range("queue:doctor:" + doctorId, 0, 0);
             if (nextTokens == null || nextTokens.isEmpty()) {
                 return;
             }

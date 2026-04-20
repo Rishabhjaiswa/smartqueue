@@ -12,7 +12,10 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import com.smartqueue.backend.enums.TokenStatus;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import java.util.List;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -23,9 +26,23 @@ public class ReceptionService {
     private final DoctorQueueService doctorQueueService;
     private final TokenRepository tokenRepository;
     private final DoctorRepository doctorRepository;
-    private final RedisTemplate<String, String> redisTemplate;
+    private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
     private final AuditLogService auditLogService;
+
+    @Value("${app.redis.required:false}")
+    private boolean redisRequired;
+
+    private boolean isRedisAvailable(String operationName, boolean isCritical) {
+        if (redisTemplate.isEmpty()) {
+            if (isCritical && redisRequired) {
+                throw new IllegalStateException("Redis required for this operation: " + operationName);
+            }
+            log.warn("Redis unavailable - falling back for operation: {}", operationName);
+            return false;
+        }
+        return true;
+    }
 
     // ✅ REAL WALK-IN WITH PATIENT
     public TokenResponse checkInWalkIn(CheckInRequest req) {
@@ -94,7 +111,7 @@ public class ReceptionService {
         if (!newDoctor.isAvailable()) {
             throw new RuntimeException("Selected doctor is unavailable");
         }
-        Long newQueueSize = redisTemplate.opsForZSet().zCard("queue:doctor:" + newDoctorId);
+        Long newQueueSize = isRedisAvailable("getQueueSize", false) ? redisTemplate.get().opsForZSet().zCard("queue:doctor:" + newDoctorId) : 0L;
         if (newDoctor.getMaxQueueSize() != null && newQueueSize != null && newQueueSize >= newDoctor.getMaxQueueSize()) {
             throw new RuntimeException("Selected doctor queue is full");
         }
@@ -116,11 +133,12 @@ public class ReceptionService {
         String oldKey = "queue:doctor:" + oldDoctorId;
         String newKey = "queue:doctor:" + newDoctorId;
 
-        // 🔥 Remove from old queue
-        try {
-            redisTemplate.opsForZSet().remove(oldKey, tokenId.toString());
-        } catch (Exception e) {
-            throw new RuntimeException("Unable to update old doctor queue");
+        if (isRedisAvailable("reassignDoctor-remove", true)) {
+            try {
+                redisTemplate.get().opsForZSet().remove(oldKey, tokenId.toString());
+            } catch (Exception e) {
+                throw new RuntimeException("Unable to update old doctor queue");
+            }
         }
 
         // 🔥 Update DB
@@ -134,10 +152,9 @@ public class ReceptionService {
                 "Token " + token.getTokenNumber() + " moved from doctor " + oldDoctorId + " to doctor " + newDoctorId
         );
 
-        // 🔥 Add to new queue
-        if (token.getStatus() == TokenStatus.WAITING) {
+        if (token.getStatus() == TokenStatus.WAITING && isRedisAvailable("reassignDoctor-add", true)) {
             try {
-                redisTemplate.opsForZSet().add(
+                redisTemplate.get().opsForZSet().add(
                         newKey,
                         tokenId.toString(),
                         token.getPriorityScore()
@@ -184,14 +201,16 @@ public class ReceptionService {
             throw new RuntimeException("Assigned doctor is unavailable");
         }
 
-        try {
-            redisTemplate.opsForZSet().add(
-                    "queue:doctor:" + token.getDoctorId(),
-                    tokenId.toString(),
-                    token.getPriorityScore()
-            );
-        } catch (Exception e) {
-            throw new RuntimeException("Unable to reinstate token in queue");
+        if (isRedisAvailable("reinstateNoShow", true)) {
+            try {
+                redisTemplate.get().opsForZSet().add(
+                        "queue:doctor:" + token.getDoctorId(),
+                        tokenId.toString(),
+                        token.getPriorityScore()
+                );
+            } catch (Exception e) {
+                throw new RuntimeException("Unable to reinstate token in queue");
+            }
         }
 
         // 🔥 Broadcast update

@@ -14,15 +14,29 @@ export function AuthProvider({ children }) {
             return;
         }
 
+        const token = localStorage.getItem("token");
+        if (!token) {
+            setLoading(false);
+            return;
+        }
+
         getMe()
             .then(res => setUser(res.data))
-            .catch(() => setUser(null))
+            .catch(() => {
+                localStorage.removeItem("token");
+                localStorage.removeItem("role");
+                setUser(null);
+            })
             .finally(() => setLoading(false));
     }, []);
 
     const login = useCallback(async (username, password) => {
         resetLoginRedirect();
-        await apiLogin(username, password);
+        const loginRes = await apiLogin(username, password);
+        const { token, role } = loginRes.data;
+        localStorage.setItem("token", token);
+        localStorage.setItem("role", role);
+
         const res = await getMe();
         setUser(res.data);
         return res.data;
@@ -31,7 +45,10 @@ export function AuthProvider({ children }) {
     const logout = useCallback(async () => {
         await apiLogout();
         resetLoginRedirect();
+        localStorage.removeItem("token");
+        localStorage.removeItem("role");
         setUser(null);
+        window.location.assign("/login");
     }, []);
 
     return (
