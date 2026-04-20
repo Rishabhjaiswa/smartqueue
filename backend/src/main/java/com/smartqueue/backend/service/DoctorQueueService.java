@@ -861,7 +861,7 @@ public class DoctorQueueService {
 
     private void notifyDelayToUpcomingPatient(Long doctorId) {
         try {
-            Set<String> nextTokens = redisTemplate.opsForZSet().range("queue:doctor:" + doctorId, 0, 0);
+            Set<String> nextTokens = redisTemplate.get().opsForZSet().range("queue:doctor:" + doctorId, 0, 0);
             if (nextTokens == null || nextTokens.isEmpty()) {
                 return;
             }
