@@ -79,7 +79,10 @@ public class SecurityConfig {
                 .filter(origin -> !origin.isBlank())
                 .toList();
 
-        config.setAllowedOrigins(originList.isEmpty() ? List.of("http://localhost:3000") : originList);
+        config.setAllowedOrigins(List.of(
+                "http://localhost:3000",
+                "https://smartqueue-frontend-theta.vercel.app"
+        ));
         config.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(java.util.List.of("*"));
         config.setAllowCredentials(true);
