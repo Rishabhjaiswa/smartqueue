@@ -26,7 +26,10 @@ public class CorsConfig {
                 .map(String::trim)
                 .filter(origin -> !origin.isBlank())
                 .toList();
-        config.setAllowedOrigins(originList.isEmpty() ? List.of("http://localhost:3000") : originList);
+        config.setAllowedOrigins(originList.isEmpty() ? (List.of(
+                "http://localhost:3000",
+                "https://smartqueue-frontend-theta.vercel.app"
+        )) : originList);
         
         config.setAllowedHeaders(List.of("*"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
