@@ -7,6 +7,14 @@ export const SERVICE_TYPE_OPTIONS = [
     { value: "OTHER", label: "Other Consultation" }
 ];
 
+export const SPECIALIZATION_OPTIONS = [
+    { value: "GENERAL", label: "General" },
+    { value: "CARDIOLOGY", label: "Cardiology" },
+    { value: "PEDIATRICS", label: "Pediatrics" },
+    { value: "DERMATOLOGY", label: "Dermatology" },
+    { value: "ORTHOPEDICS", label: "Orthopedics" }
+];
+
 export const VISIT_TYPE_LABELS = {
     WALK_IN: "Walk-in",
     APPOINTMENT: "Appointment",

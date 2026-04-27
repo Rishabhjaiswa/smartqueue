@@ -14,8 +14,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 import java.util.Optional;
 
 import java.time.Duration;
@@ -68,12 +70,11 @@ public class DoctorQueueService {
     public TokenResponse callNext(Long doctorId) {
 
         String key = "queue:doctor:" + doctorId;
-        Doctor doctor = doctorRepository.findById(doctorId).orElse(null);
+        Doctor doctor = doctorRepository.findById(doctorId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Doctor not found: " + doctorId));
 
-        if (doctor != null && !doctor.isAvailable()) {
-            return TokenResponse.builder()
-                    .message("Doctor is unavailable and cannot call the next patient")
-                    .build();
+        if (!doctor.isAvailable()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Doctor is unavailable and cannot call the next patient");
         }
 
         Token activeToken = tokenRepository
@@ -93,17 +94,13 @@ public class DoctorQueueService {
         Set<String> top;
 
         if (!isRedisAvailable("callNext-range", false)) {
-            return TokenResponse.builder()
-                    .message("Redis not available / Queue empty")
-                    .build();
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Queue service unavailable — Redis is down");
         }
 
         try {
             top = redisTemplate.get().opsForZSet().range(key, 0, 0);
         } catch (Exception e) {
-            return TokenResponse.builder()
-                    .message("Redis not available / Queue empty")
-                    .build();
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Queue service unavailable — Redis error: " + e.getMessage());
         }
 
         if (top == null || top.isEmpty()) {
@@ -133,9 +130,7 @@ public class DoctorQueueService {
             if (isRedisAvailable("callNext-remove-notfound", true)) {
                 redisTemplate.get().opsForZSet().remove(key, tokenIdStr);
             }
-            return TokenResponse.builder()
-                    .message("Token not found")
-                    .build();
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Token " + tokenId + " not found in database");
         }
 
         if (token.getStatus() != TokenStatus.WAITING) {
@@ -186,8 +181,10 @@ public class DoctorQueueService {
                 buildDoctorQueueDTO(doctorId)
         );
 
+        int officeId = doctor.getOfficeId() != null ? doctor.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                buildReceptionOverview()
+                officeId,
+                buildReceptionOverview(officeId)
         );
 
         return buildResponse(token);
@@ -220,8 +217,11 @@ public class DoctorQueueService {
                 buildDoctorQueueDTO(doctorId)
         );
 
+        Doctor doc = doctorRepository.findById(doctorId).orElse(null);
+        int officeId = doc != null && doc.getOfficeId() != null ? doc.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                buildReceptionOverview()
+                officeId,
+                buildReceptionOverview(officeId)
         );
 
     }
@@ -278,8 +278,12 @@ public class DoctorQueueService {
                 buildDoctorQueueDTO(doctorId)
         );
 
+        int completeOfficeId = doctorRepository.findById(doctorId)
+                .map(d -> d.getOfficeId() != null ? d.getOfficeId() : 1)
+                .orElse(1);
         broadcastService.broadcastReceptionOverview(
-                buildReceptionOverview()
+                completeOfficeId,
+                buildReceptionOverview(completeOfficeId)
         );
     }
 
@@ -402,9 +406,9 @@ public class DoctorQueueService {
                 .build();
     }
 
-    public ReceptionOverviewDTO buildReceptionOverview() {
+    public ReceptionOverviewDTO buildReceptionOverview(Integer officeId) {
 
-        List<Doctor> doctors = doctorRepository.findByAvailableTrue();
+        List<Doctor> doctors = doctorRepository.findByAvailableTrueAndOfficeId(officeId);
 
         List<ReceptionOverviewDTO.DoctorSummary> summaries = new ArrayList<>();
 
@@ -437,6 +441,7 @@ public class DoctorQueueService {
         }
 
         return ReceptionOverviewDTO.builder()
+                .officeId(officeId != null ? officeId : 1)
                 .totalDoctorsActive(doctors.size())
                 .totalPatientsWaiting(totalWaiting)
                 .doctors(summaries)
@@ -568,8 +573,12 @@ public class DoctorQueueService {
         }
 
         broadcastAllDoctors();
+        int officeId = doctorRepository.findById(doctorId)
+                .map(d -> d.getOfficeId() != null ? d.getOfficeId() : 1)
+                .orElse(1);
         broadcastService.broadcastReceptionOverview(
-                buildReceptionOverview()
+                officeId,
+                buildReceptionOverview(officeId)
         );
     }
 
@@ -593,8 +602,11 @@ public class DoctorQueueService {
                 doctorId,
                 buildDoctorQueueDTO(doctorId)
         );
+        Doctor extDoc = doctorRepository.findById(doctorId).orElse(null);
+        int extOfficeId = extDoc != null && extDoc.getOfficeId() != null ? extDoc.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                buildReceptionOverview()
+                extOfficeId,
+                buildReceptionOverview(extOfficeId)
         );
     }
 

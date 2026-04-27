@@ -63,6 +63,7 @@ public class StaffUserService implements UserDetailsService {
         Map<String, Object> profile = new LinkedHashMap<>();
         profile.put("username", staffUser.getUsername());
         profile.put("role", toAuthority(staffUser.getRole()));
+        profile.put("officeId", staffUser.getOfficeId() != null ? staffUser.getOfficeId() : 1);
         profile.put("doctorId", staffUser.getDoctorId());
         profile.put("name", doctor != null ? doctor.getName() : staffUser.getUsername());
         profile.put("doctorName", doctor != null ? doctor.getName() : "");
@@ -99,6 +100,7 @@ public class StaffUserService implements UserDetailsService {
                                 .available(true)
                                 .avgConsultMins(request.getAvgConsultMins() == null || request.getAvgConsultMins() <= 0
                                         ? 10 : request.getAvgConsultMins())
+                                .officeId(request.getOfficeId() != null ? request.getOfficeId() : 1)
                                 .maxQueueSize(25)
                                 .build()
                 );
@@ -114,7 +116,7 @@ public class StaffUserService implements UserDetailsService {
                 StaffUser.builder()
                         .username(username)
                         .password(passwordEncoder.encode(request.getPassword()))
-                        .officeId(1)
+                        .officeId(request.getOfficeId() != null ? request.getOfficeId() : 1)
                         .role(role)
                         .doctorId(doctorId)
                         .build()
@@ -200,6 +202,7 @@ public class StaffUserService implements UserDetailsService {
                 .id(staffUser.getId())
                 .username(staffUser.getUsername())
                 .role(staffUser.getRole())
+                .officeId(staffUser.getOfficeId() != null ? staffUser.getOfficeId() : 1)
                 .doctorId(staffUser.getDoctorId())
                 .doctorName(doctor != null ? doctor.getName() : null)
                 .build();

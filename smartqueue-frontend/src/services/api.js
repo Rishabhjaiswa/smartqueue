@@ -128,11 +128,46 @@ export const getDoctors = () =>
 export const getDisplayBoard = () =>
     api.get("/api/reception/display");
 
+export const getAllOfficesDisplay = () =>
+    axios.get(`${BASE}/api/reception/display/all`);
+
 // ======================
 // 🤖 AI Chat
 // ======================
 export const sendChatMessage = (message, officeId) =>
     api.post("/api/chat", { message, officeId });
+
+// ======================
+// 🧾 PATIENT (Public — no auth)
+// ======================
+export const getTokenStatus = (tokenId) =>
+    axios.get(`${BASE}/api/patient/status/${tokenId}`);
+
+export const getPatientHistory = (patientId) =>
+    api.get(`/api/patient/${patientId}/history`);
+
+// ======================
+// 📄 REPORTS (PDF)
+// ======================
+/**
+ * Streams the visit PDF as a Blob and triggers a browser download.
+ * @param {number} tokenId
+ * @param {boolean} forceDownload - true = attachment, false = inline
+ */
+export const downloadVisitReport = async (tokenId, forceDownload = true) => {
+    const res = await api.get(`/api/reports/visit/${tokenId}`, {
+        params: { download: forceDownload },
+        responseType: "blob"
+    });
+    const url = window.URL.createObjectURL(new Blob([res.data], { type: "application/pdf" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `SmartQueue_Visit_${tokenId}.pdf`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+};
 
 export default api;
 

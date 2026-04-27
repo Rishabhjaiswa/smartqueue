@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useContext } from "react";
 import {
     bookAppointment,
     checkInWalkIn,
@@ -9,13 +9,20 @@ import {
     reassignDoctor,
     getReceptionOverview,
     getDoctors,
-    getWaitingTokens
+    getWaitingTokens,
+    downloadVisitReport
 } from "../services/api";
 
 import { connectSocket, disconnectSocket } from "../websocket/socket";
-import { SERVICE_TYPE_OPTIONS } from "../utils/medicalLabels";
+import { SERVICE_TYPE_OPTIONS, SPECIALIZATION_OPTIONS } from "../utils/medicalLabels";
+import QRModal from "../components/QRModal";
+import { AuthContext } from "../auth/AuthContext";
 
 export default function ReceptionPanel() {
+    const { user } = useContext(AuthContext);
+    // officeId is derived from the logged-in user's profile — never typed manually
+    const myOfficeId = user?.officeId ?? 1;
+
     const [overview, setOverview] = useState(null);
     const [doctors, setDoctors] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -26,16 +33,17 @@ export default function ReceptionPanel() {
     const [form, setForm] = useState({
         patientName: "",
         age: "",
+        phone: "",
         serviceType: "",
-        severityScore: 0,
-        officeId: ""
+        suggestedSpecialization: "",
+        severityScore: 0
     });
+    const [reportLoading, setReportLoading] = useState(false);
     const [appointmentForm, setAppointmentForm] = useState({
         patientName: "",
         age: "",
         serviceType: "",
         severityScore: 0,
-        officeId: "",
         appointmentTime: ""
     });
 
@@ -48,6 +56,7 @@ export default function ReceptionPanel() {
     const [reinstatableTokens, setReinstatableTokens] = useState([]);
     const [validationErrors, setValidationErrors] = useState({});
     const [lastToken, setLastToken] = useState(null);
+    const [showQR, setShowQR] = useState(false);
 
     useEffect(() => {
         let active = true;
@@ -77,7 +86,7 @@ export default function ReceptionPanel() {
             } catch (err) {
                 if (active) {
                     setError(
-                        err?.response?.data?.message || "Unable to load reception dashboard."
+                        err?.response?.data?.detail || err?.response?.data?.message || "Unable to load reception dashboard."
                     );
                 }
             } finally {
@@ -95,7 +104,7 @@ export default function ReceptionPanel() {
             }
             setOverview(data);
             setError("");
-        });
+        }, myOfficeId);
 
         const interval = setInterval(() => {
             refreshOverview(false);
@@ -106,21 +115,29 @@ export default function ReceptionPanel() {
             disconnectSocket();
             clearInterval(interval);
         };
-    }, []);
+    }, [myOfficeId]);
 
     const refreshOverview = async () => {
-        const [overviewRes, doctorsRes, waitingRes, activeRes, reinstatableRes] = await Promise.all([
-            getReceptionOverview(),
-            getDoctors(),
-            getWaitingTokens(),
-            getActiveTokens(),
-            getReinstatableTokens()
-        ]);
-        setOverview(overviewRes.data);
-        setDoctors(doctorsRes.data);
-        setWaitingTokens(waitingRes.data || []);
-        setActiveTokens(activeRes.data || []);
-        setReinstatableTokens(reinstatableRes.data || []);
+        try {
+            const [overviewRes, doctorsRes, waitingRes, activeRes, reinstatableRes] = await Promise.all([
+                getReceptionOverview(),
+                getDoctors(),
+                getWaitingTokens(),
+                getActiveTokens(),
+                getReinstatableTokens()
+            ]);
+            setOverview(overviewRes.data);
+            setDoctors(doctorsRes.data);
+            setWaitingTokens(waitingRes.data || []);
+            setActiveTokens(activeRes.data || []);
+            setReinstatableTokens(reinstatableRes.data || []);
+        } catch (err) {
+            // Non-critical refresh failure — show inline error, do NOT propagate
+            // (avoids bubbling to the 401 interceptor for non-auth errors)
+            if (err?.response?.status !== 401) {
+                setError(err?.response?.data?.detail || err?.response?.data?.message || "Unable to refresh dashboard.");
+            }
+        }
     };
 
     const handleCheckIn = async () => {
@@ -136,10 +153,6 @@ export default function ReceptionPanel() {
 
         if (!form.serviceType) {
             nextErrors.serviceType = "Select a consultation type.";
-        }
-
-        if (form.officeId === "" || Number(form.officeId) <= 0) {
-            nextErrors.officeId = "Office ID is required.";
         }
 
         if (Number(form.severityScore) < 0 || Number(form.severityScore) > 10) {
@@ -161,22 +174,27 @@ export default function ReceptionPanel() {
             await checkInWalkIn({
                 patientName: form.patientName,
                 age: form.age === "" ? null : Number(form.age),
+                phone: form.phone.trim() || null,
                 serviceType: form.serviceType,
+                suggestedSpecialization: form.suggestedSpecialization || null,
                 severityScore: Number(form.severityScore) || 0,
-                officeId: form.officeId === "" ? null : Number(form.officeId)
+                officeId: myOfficeId,
+                idempotencyKey: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString()
             }).then((res) => setLastToken(res.data));
             await refreshOverview();
             setMessage("Patient checked in.");
+            setShowQR(true);
             setForm({
                 patientName: "",
                 age: "",
+                phone: "",
                 serviceType: "",
-                severityScore: 0,
-                officeId: ""
+                suggestedSpecialization: "",
+                severityScore: 0
             });
             setValidationErrors({});
         } catch (e) {
-            setError(e?.response?.data?.message || "Unable to check in patient.");
+            setError(e?.response?.data?.detail || e?.response?.data?.message || "Unable to check in patient.");
         } finally {
             setActionLoading(false);
         }
@@ -193,7 +211,7 @@ export default function ReceptionPanel() {
             setNoShowTokenId("");
             setReassignDoctorId("");
         } catch (e) {
-            setError(e?.response?.data?.message || "Unable to mark no-show.");
+            setError(e?.response?.data?.detail || e?.response?.data?.message || "Unable to mark no-show.");
         } finally {
             setActionLoading(false);
         }
@@ -207,9 +225,6 @@ export default function ReceptionPanel() {
         }
         if (!appointmentForm.serviceType) {
             nextErrors.appointmentServiceType = "Select a consultation type.";
-        }
-        if (appointmentForm.officeId === "" || Number(appointmentForm.officeId) <= 0) {
-            nextErrors.appointmentOfficeId = "Office ID is required.";
         }
         if (!appointmentForm.appointmentTime) {
             nextErrors.appointmentTime = "Appointment time is required.";
@@ -232,10 +247,11 @@ export default function ReceptionPanel() {
                 age: appointmentForm.age === "" ? null : Number(appointmentForm.age),
                 serviceType: appointmentForm.serviceType,
                 severityScore: Number(appointmentForm.severityScore) || 0,
-                officeId: appointmentForm.officeId === "" ? null : Number(appointmentForm.officeId),
+                officeId: myOfficeId,
                 appointmentTime: new Date(appointmentForm.appointmentTime).toISOString()
             });
             setLastToken(res.data);
+            setShowQR(true);
             await refreshOverview();
             setMessage("Appointment booked.");
             setAppointmentForm({
@@ -243,11 +259,10 @@ export default function ReceptionPanel() {
                 age: "",
                 serviceType: "",
                 severityScore: 0,
-                officeId: "",
                 appointmentTime: ""
             });
         } catch (e) {
-            setError(e?.response?.data?.message || "Unable to book appointment.");
+            setError(e?.response?.data?.detail || e?.response?.data?.message || "Unable to book appointment.");
         } finally {
             setActionLoading(false);
         }
@@ -264,7 +279,7 @@ export default function ReceptionPanel() {
             setReinstateTokenId("");
             setReassignDoctorId("");
         } catch (e) {
-            setError(e?.response?.data?.message || "Unable to reinstate token.");
+            setError(e?.response?.data?.detail || e?.response?.data?.message || "Unable to reinstate token.");
         } finally {
             setActionLoading(false);
         }
@@ -281,7 +296,7 @@ export default function ReceptionPanel() {
             setReassignTokenId("");
             setReassignDoctorId("");
         } catch (e) {
-            setError(e?.response?.data?.message || "Unable to reassign doctor.");
+            setError(e?.response?.data?.detail || e?.response?.data?.message || "Unable to reassign doctor.");
         } finally {
             setActionLoading(false);
         }
@@ -289,8 +304,7 @@ export default function ReceptionPanel() {
 
     const isCheckInDisabled = actionLoading
         || !form.patientName.trim()
-        || !form.serviceType
-        || form.officeId === "";
+        || !form.serviceType;
 
     const isNoShowDisabled = actionLoading || !noShowTokenId;
     const isReassignDisabled = actionLoading || !reassignTokenId || !reassignDoctorId;
@@ -328,9 +342,31 @@ export default function ReceptionPanel() {
 
             {lastToken ? (
                 <div style={successBanner}>
-                    Token generated: <strong>{lastToken.tokenNumber}</strong> · Doctor {lastToken.doctorName} · Position #{lastToken.positionInQueue} · ~{lastToken.estimatedWaitMinutes} min
+                    Token: <strong>{lastToken.tokenNumber}</strong> · Dr. {lastToken.doctorName} · Position #{lastToken.positionInQueue} · ~{lastToken.estimatedWaitMinutes} min
+                    <button
+                        style={{ marginLeft: 12, padding: '4px 14px', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13 }}
+                        onClick={() => setShowQR(true)}
+                    >
+                        📱 Show QR
+                    </button>
+                    <button
+                        style={{ marginLeft: 8, padding: '4px 14px', background: '#0f766e', color: '#fff', border: 'none', borderRadius: 8, cursor: reportLoading ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, opacity: reportLoading ? 0.7 : 1 }}
+                        disabled={reportLoading}
+                        onClick={async () => {
+                            setReportLoading(true);
+                            try { await downloadVisitReport(lastToken.id); }
+                            catch { setError("PDF generation failed. Try again."); }
+                            finally { setReportLoading(false); }
+                        }}
+                    >
+                        {reportLoading ? "Generating..." : "📄 Download Report"}
+                    </button>
                 </div>
             ) : null}
+
+            {showQR && lastToken && (
+                <QRModal token={lastToken} onClose={() => setShowQR(false)} />
+            )}
 
             <div style={layout}>
                 <div style={leftColumn}>
@@ -371,6 +407,17 @@ export default function ReceptionPanel() {
                             </div>
 
                             <div style={field}>
+                                <label style={label}>Mobile Number <span style={optionalTag}>(optional — for family ID)</span></label>
+                                <input
+                                    style={input(false)}
+                                    type="tel"
+                                    placeholder="e.g. 9876543210"
+                                    value={form.phone}
+                                    onChange={e => setForm({ ...form, phone: e.target.value })}
+                                />
+                            </div>
+
+                            <div style={field}>
                                 <label style={label}>Consultation Type</label>
                                 <select
                                     style={input(validationErrors.serviceType)}
@@ -390,17 +437,19 @@ export default function ReceptionPanel() {
                             </div>
 
                             <div style={field}>
-                                <label style={label}>Office ID</label>
-                                <input
-                                    style={input(validationErrors.officeId)}
-                                    type="number"
-                                    placeholder="Enter office ID"
-                                    value={form.officeId}
-                                    onChange={e => setForm({ ...form, officeId: e.target.value })}
-                                />
-                                {validationErrors.officeId ? (
-                                    <span style={fieldError}>{validationErrors.officeId}</span>
-                                ) : null}
+                                <label style={label}>Department (Specialization)</label>
+                                <select
+                                    style={input(false)}
+                                    value={form.suggestedSpecialization}
+                                    onChange={e => setForm({ ...form, suggestedSpecialization: e.target.value })}
+                                >
+                                    <option value="">Auto-assign / General</option>
+                                    {SPECIALIZATION_OPTIONS.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </select>
                             </div>
 
                             <div style={fieldFull}>
@@ -475,18 +524,6 @@ export default function ReceptionPanel() {
                                     ))}
                                 </select>
                                 {validationErrors.appointmentServiceType ? <span style={fieldError}>{validationErrors.appointmentServiceType}</span> : null}
-                            </div>
-
-                            <div style={field}>
-                                <label style={label}>Office ID</label>
-                                <input
-                                    style={input(validationErrors.appointmentOfficeId)}
-                                    type="number"
-                                    placeholder="Enter office ID"
-                                    value={appointmentForm.officeId}
-                                    onChange={e => setAppointmentForm({ ...appointmentForm, officeId: e.target.value })}
-                                />
-                                {validationErrors.appointmentOfficeId ? <span style={fieldError}>{validationErrors.appointmentOfficeId}</span> : null}
                             </div>
 
                             <div style={field}>
@@ -808,6 +845,13 @@ const input = (hasError) => ({
 const fieldError = {
     fontSize: "13px",
     color: "#b42318"
+};
+
+const optionalTag = {
+    fontSize: "12px",
+    fontWeight: "400",
+    color: "#88a9b4",
+    marginLeft: "4px"
 };
 
 const severityWrap = {

@@ -59,12 +59,14 @@ public class Token {
 
     @Enumerated(EnumType.STRING)
     @Column(name = "visit_type", nullable = false)
+    @Builder.Default
     private VisitType visitType = VisitType.WALK_IN;
 
     @Column(name = "chief_complaint")
     private String chiefComplaint;
 
     @Column(name = "severity_score")
+    @Builder.Default
     private Integer severityScore = 0;
 
     @Column(name = "dynamic_score")
@@ -84,4 +86,8 @@ public class Token {
 
     @Column(name = "appointment_scheduled_time")
     private LocalDateTime appointmentScheduledTime;
+
+    @Column(name = "requires_assistance", nullable = false)
+    @Builder.Default
+    private boolean requiresAssistance = false;
 }

@@ -18,11 +18,18 @@ public class Doctor {
     private String roomNumber;
 
     @Column(name = "is_available")
+    @Builder.Default
     private boolean available = true;
 
     @Column(name = "avg_consult_mins")
+    @Builder.Default
     private Integer avgConsultMins = 10;
 
     @Column(name = "max_queue_size")
+    @Builder.Default
     private Integer maxQueueSize = 25;
+
+    @Column(name = "office_id", nullable = false)
+    @Builder.Default
+    private Integer officeId = 1;
 }

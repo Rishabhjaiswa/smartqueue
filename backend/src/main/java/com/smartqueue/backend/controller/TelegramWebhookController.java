@@ -61,6 +61,9 @@ public class TelegramWebhookController{
     @Value("${telegram.session.ttl-minutes:180}")
     private long telegramSessionTtlMinutes;
 
+    @Value("${app.frontend.base-url:http://localhost:3000}")
+    private String frontendBaseUrl;
+
     @GetMapping("/telegram/webhook")
     public ResponseEntity<String> testWebhook() {
         return ResponseEntity.ok("Webhook is live");
@@ -136,11 +139,44 @@ public class TelegramWebhookController{
     private void handleGuidedIntake(Long chatId, String text) {
         IntakeSession session = loadSession(chatId);
         if (session == null) {
-            telegramService.sendMessage(chatId, "Type <b>/start</b> to begin the guided booking flow.");
+            telegramService.sendMessage(chatId, "Your session expired. Please type <b>/start</b> again.");
             return;
         }
 
         switch (session.getStep()) {
+            case SELECT_OFFICE -> {
+                String trimmed = text.trim();
+                int officeId;
+                try {
+                    officeId = Integer.parseInt(trimmed);
+                    if (officeId < 1) throw new NumberFormatException();
+                } catch (NumberFormatException e) {
+                    telegramService.sendMessage(chatId,
+                            "Please reply with a valid office number (e.g. <b>1</b> for main clinic).");
+                    return;
+                }
+                session.setOfficeId(officeId);
+                List<Patient> patientsForOffice = patientRepository.findAllByTelegramChatIdOrderByCreatedAtAsc(chatId);
+                if (!patientsForOffice.isEmpty()) {
+                    session.setStep(IntakeStep.SELECT_PATIENT);
+                    saveSession(chatId, session);
+                    Patient activePatient = resolveActivePatient(chatId);
+                    StringBuilder msg = new StringBuilder("<b>Office " + officeId + " selected.</b>\n\nSelect the active patient or reply <b>new</b>:\n");
+                    for (int i = 0; i < patientsForOffice.size(); i++) {
+                        Patient p = patientsForOffice.get(i);
+                        msg.append(i + 1).append(". ").append(escapeHtml(p.getName()))
+                           .append(activePatient != null && activePatient.getId().equals(p.getId()) ? " <b>[active]</b>" : "")
+                           .append(" (age ").append(p.getAge()).append(")\n");
+                    }
+                    telegramService.sendMessage(chatId, msg.toString().trim());
+                } else {
+                    session.setStep(IntakeStep.ASK_NAME);
+                    saveSession(chatId, session);
+                    telegramService.sendMessage(chatId,
+                            "<b>Office " + officeId + " selected.</b>\n\n"
+                            + "<b>Step 1 of 4</b>\nPlease enter the patient name.");
+                }
+            }
             case SELECT_PATIENT -> {
                 String normalized = text.trim().toLowerCase();
                 List<Patient> patients = patientRepository.findAllByTelegramChatIdOrderByCreatedAtAsc(chatId);
@@ -267,7 +303,7 @@ public class TelegramWebhookController{
 
                 ChatRequest request = new ChatRequest();
                 request.setMessage(text);
-                request.setOfficeId(defaultOfficeId);
+                request.setOfficeId(session.getOfficeId() != null ? session.getOfficeId() : defaultOfficeId);
                 request.setPatientId(session.getActivePatientId());
                 request.setSessionId(chatId.toString());
 
@@ -279,13 +315,15 @@ public class TelegramWebhookController{
                         if ("ALREADY_EXISTS".equals(tokenResponse.getMessage())) {
                             telegramService.sendMessage(chatId, "You already have an active token.\n\nUse <b>/status</b> to track it or <b>/cancel</b> to cancel.");
                         } else {
-                            telegramService.sendMessage(chatId, 
+                            String magicLink = buildMagicLink(tokenResponse.getId());
+                            telegramService.sendMessage(chatId,
                                 "<b>Token confirmed.</b>\n\n"
                                 + "<b>Token:</b> " + escapeHtml(tokenResponse.getTokenNumber()) + "\n"
                                 + "<b>Doctor:</b> " + escapeHtml(tokenResponse.getDoctorName()) + "\n"
                                 + "<b>Position:</b> #" + tokenResponse.getPositionInQueue() + "\n"
                                 + "<b>Estimated wait:</b> " + buildWaitRange(tokenResponse.getEstimatedWaitMinutes()) + "\n\n"
-                                + "Please keep this chat open for live updates.");
+                                + "\uD83D\uDCF1 <b>Track your queue live:</b>\n" + magicLink + "\n\n"
+                                + "Bookmark this link or scan the QR code at reception.");
                         }
                         clearBookingSession(chatId, session);
                     } else {
@@ -346,6 +384,8 @@ public class TelegramWebhookController{
                     .append(escapeHtml(doctorName))
                     .append("\nEstimated wait: ")
                     .append(buildWaitRange(estimatedWait))
+                    .append("\n\uD83D\uDCF1 Track live: ")
+                    .append(buildMagicLink(token.getId()))
                     .append("\n");
         }
         return message.toString().trim();
@@ -456,6 +496,12 @@ public class TelegramWebhookController{
         };
     }
 
+    /** Returns the full Magic Link URL for a patient to track their token live. */
+    private String buildMagicLink(Long tokenId) {
+        if (tokenId == null) return frontendBaseUrl;
+        return frontendBaseUrl.replaceAll("/+$", "") + "/status/" + tokenId;
+    }
+
     private String buildWaitRange(int minutes) {
         int start = Math.max(0, minutes);
         int end = start + 10;
@@ -474,18 +520,14 @@ public class TelegramWebhookController{
     }
 
     private void startOrResumeSession(Long chatId, String firstName) {
-        List<Patient> patients = patientRepository.findAllByTelegramChatIdOrderByCreatedAtAsc(chatId);
-        if (!patients.isEmpty()) {
-            promptPatientSelection(chatId, firstName, true);
-            return;
-        }
-
-        saveSession(chatId, new IntakeSession(IntakeStep.ASK_NAME, null, null, null, null, true));
+        // Always start by asking which office the patient is visiting
+        IntakeSession session = new IntakeSession(
+                IntakeStep.SELECT_OFFICE, null, null, null, null, true, null);
+        saveSession(chatId, session);
         telegramService.sendMessage(chatId,
                 "<b>Hello " + firstName + ".</b>\n\n"
-                        + "I am the SmartQueue clinic assistant.\n"
-                        + "I will guide you through booking a consultation token.\n\n"
-                        + "<b>Step 1 of 4</b>\nPlease enter the patient name.");
+                + "Welcome to SmartQueue. Which clinic office are you visiting today?\n\n"
+                + "Please reply with the office number (e.g. <b>1</b> for main clinic, <b>2</b> for branch, etc.)");
     }
 
     private Patient resolveActivePatient(Long chatId) {
@@ -634,6 +676,7 @@ public class TelegramWebhookController{
     }
 
     private enum IntakeStep {
+        SELECT_OFFICE,
         SELECT_PATIENT,
         ASK_NAME,
         ASK_AGE,
@@ -651,5 +694,13 @@ public class TelegramWebhookController{
         private ServiceType serviceType;
         private Long activePatientId;
         private Boolean bookingSelection;
+        private Integer officeId;
+
+        /** Legacy 6-arg constructor for existing code paths (officeId defaults to null). */
+        public IntakeSession(IntakeStep step, String name, Integer age,
+                             ServiceType serviceType, Long activePatientId,
+                             Boolean bookingSelection) {
+            this(step, name, age, serviceType, activePatientId, bookingSelection, null);
+        }
     }
 }

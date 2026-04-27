@@ -3,7 +3,8 @@ import {
     callNext,
     completeConsultation,
     extendConsultation,
-    setDoctorAvailability
+    setDoctorAvailability,
+    downloadVisitReport
 } from "../services/api";
 import { connectSocket, disconnectSocket } from "../websocket/socket";
 import { getDoctorQueue } from "../services/api";
@@ -17,6 +18,7 @@ export default function DoctorPanel() {
     const [queue, setQueue] = useState(null);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
+    const [reportLoading, setReportLoading] = useState(false);
     const [error, setError] = useState("");
     const [available, setAvailable] = useState(Boolean(user?.available));
     const [remainingSeconds, setRemainingSeconds] = useState(null);
@@ -69,7 +71,7 @@ export default function DoctorPanel() {
             } catch (err) {
                 if (active) {
                     setError(
-                        err?.response?.data?.message || "Unable to load doctor queue."
+                        err?.response?.data?.detail || err?.response?.data?.message || "Unable to load doctor queue."
                     );
                 }
             } finally {
@@ -115,7 +117,7 @@ export default function DoctorPanel() {
             setQueue(res.data);
         } catch (err) {
             setError(
-                err?.response?.data?.message || "Unable to call next patient."
+                err?.response?.data?.detail || err?.response?.data?.message || "Unable to call next patient."
             );
         } finally {
             setActionLoading(false);
@@ -133,7 +135,7 @@ export default function DoctorPanel() {
             setQueue(res.data);
         } catch (err) {
             setError(
-                err?.response?.data?.message || "Unable to complete consultation."
+                err?.response?.data?.detail || err?.response?.data?.message || "Unable to complete consultation."
             );
         } finally {
             setActionLoading(false);
@@ -151,7 +153,7 @@ export default function DoctorPanel() {
             setQueue(res.data);
         } catch (err) {
             setError(
-                err?.response?.data?.message || "Unable to extend consultation."
+                err?.response?.data?.detail || err?.response?.data?.message || "Unable to extend consultation."
             );
         } finally {
             setActionLoading(false);
@@ -167,7 +169,7 @@ export default function DoctorPanel() {
             setAvailable(nextValue);
         } catch (err) {
             setError(
-                err?.response?.data?.message || "Unable to update availability."
+                err?.response?.data?.detail || err?.response?.data?.message || "Unable to update availability."
             );
         } finally {
             setActionLoading(false);
@@ -290,6 +292,20 @@ export default function DoctorPanel() {
                         >
                             Extend Consultation (+5 min)
                         </button>
+                        {hasCurrentToken && (
+                            <button
+                                style={reportButton}
+                                disabled={reportLoading}
+                                onClick={async () => {
+                                    setReportLoading(true);
+                                    try { await downloadVisitReport(queue.currentTokenId); }
+                                    catch { setError("PDF generation failed."); }
+                                    finally { setReportLoading(false); }
+                                }}
+                            >
+                                {reportLoading ? "Generating..." : "📄 Report"}
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -530,6 +546,13 @@ const secondaryButton = {
     ...buttonBase,
     background: "#e8f3f6",
     color: "#174654"
+};
+
+const reportButton = {
+    ...buttonBase,
+    background: "#f0faf8",
+    color: "#0f766e",
+    border: "1.5px solid #0f766e"
 };
 
 const availabilityButton = (available) => ({

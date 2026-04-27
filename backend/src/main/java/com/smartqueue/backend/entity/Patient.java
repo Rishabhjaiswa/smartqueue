@@ -13,7 +13,7 @@ public class Patient {
     @Column(nullable = false)
     private String name;
 
-    @Column(unique = true, nullable = false)
+    @Column(nullable = false)
     private String phone;
 
     @Column(nullable = false)
@@ -28,4 +28,8 @@ public class Patient {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
+    /** Phase 3: Last doctor this patient was confirmed seen by. */
+    @Column(name = "preferred_doctor_id")
+    private Long preferredDoctorId;
 }

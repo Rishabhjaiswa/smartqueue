@@ -7,6 +7,7 @@ import DoctorPanel from "./pages/DoctorPanel";
 import ReceptionPanel from "./pages/ReceptionPanel";
 import DisplayBoard from "./pages/DisplayBoard";
 import AdminPage from "./pages/AdminPage";
+import PatientStatusPage from "./pages/PatientStatusPage";
 
 export default function App() {
     return (
@@ -34,6 +35,10 @@ export default function App() {
                     } />
                     <Route path="/board" element={<DisplayBoard />} />
                     <Route path="/display" element={<DisplayBoard />} />
+
+                    {/* 🧾 Public Magic Link — no auth required */}
+                    <Route path="/status/:tokenId" element={<PatientStatusPage />} />
+                    <Route path="/status" element={<PatientStatusPage />} />
                     {/* Add this to avoid blank */}
                     <Route path="/unauthorized" element={<div>Unauthorized</div>} />
 

@@ -4,6 +4,7 @@ import com.smartqueue.backend.dto.*;
 import com.smartqueue.backend.entity.Doctor;
 import com.smartqueue.backend.entity.Patient;
 import com.smartqueue.backend.entity.Token;
+import com.smartqueue.backend.idempotency.IdempotencyService;
 import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.TokenRepository;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ public class ReceptionService {
     private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
     private final AuditLogService auditLogService;
+    private final IdempotencyService idempotencyService;
 
     @Value("${app.redis.required:false}")
     private boolean redisRequired;
@@ -47,15 +49,31 @@ public class ReceptionService {
     // ✅ REAL WALK-IN WITH PATIENT
     public TokenResponse checkInWalkIn(CheckInRequest req) {
 
+        // ── Idempotency guard (SETNX / 60s TTL) ──────────────────────────────
+        // Key = user-supplied UUID, or deterministic fallback from request fields.
+        // Only the first call within the TTL window proceeds; duplicates get 409.
+        String idemKey = (req.getIdempotencyKey() != null && !req.getIdempotencyKey().isBlank())
+                ? "checkin:" + req.getIdempotencyKey()
+                : "checkin:" + req.getOfficeId() + ":" + req.getPatientName() + ":" + req.getAge();
+
+        if (!idempotencyService.tryAcquire(idemKey, IdempotencyService.CHECKIN_TTL)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Duplicate check-in request — please wait 60 seconds before retrying"
+            );
+        }
+
         Patient patient = Patient.builder()
                 .name(req.getPatientName())
                 .age(req.getAge())
+                .phone(req.getPhone())
                 .build();
 
         TokenRequest tokenRequest = new TokenRequest();
         tokenRequest.setServiceType(req.getServiceType());
         tokenRequest.setSeverityScore(req.getSeverityScore());
         tokenRequest.setOfficeId(req.getOfficeId());
+        tokenRequest.setRequiresAssistance(req.isRequiresAssistance());
         tokenRequest.setVisitType(
                 com.smartqueue.backend.enums.VisitType.WALK_IN
         );
@@ -86,7 +104,7 @@ public class ReceptionService {
     }
 
     public ReceptionOverviewDTO getOverview() {
-        return doctorQueueService.buildReceptionOverview();
+        return doctorQueueService.buildReceptionOverview(1);
     }
 
     public void markNoShow(Long tokenId) {
@@ -175,8 +193,12 @@ public class ReceptionService {
                 doctorQueueService.buildDoctorQueueDTO(newDoctorId)
         );
 
+        int reassignOfficeId = doctorRepository.findById(newDoctorId)
+                .map(d -> d.getOfficeId() != null ? d.getOfficeId() : 1)
+                .orElse(1);
         broadcastService.broadcastReceptionOverview(
-                doctorQueueService.buildReceptionOverview()
+                reassignOfficeId,
+                doctorQueueService.buildReceptionOverview(reassignOfficeId)
         );
     }
     public TokenResponse reinstateNoShow(Long tokenId, String reason) {
@@ -219,8 +241,10 @@ public class ReceptionService {
                 doctorQueueService.buildDoctorQueueDTO(token.getDoctorId())
         );
 
+        int reinstateOfficeId = token.getOfficeId() != null ? token.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                doctorQueueService.buildReceptionOverview()
+                reinstateOfficeId,
+                doctorQueueService.buildReceptionOverview(reinstateOfficeId)
         );
 
         return TokenResponse.builder()
@@ -234,6 +258,19 @@ public class ReceptionService {
     public List<EligibleTokenDTO> getEligibleTokens(List<TokenStatus> statuses) {
         return tokenRepository.findByStatusInOrderByCreatedAtDescWithPatient(statuses)
                 .stream()
+                .map(token -> EligibleTokenDTO.builder()
+                        .id(token.getId())
+                        .tokenNumber(token.getTokenNumber())
+                        .patientName(token.getPatient() != null ? token.getPatient().getName() : "Patient")
+                        .status(token.getStatus().name())
+                        .build())
+                .toList();
+    }
+
+    public List<EligibleTokenDTO> getEligibleTokensByOffice(List<TokenStatus> statuses, int officeId) {
+        return tokenRepository.findByStatusInOrderByCreatedAtDescWithPatient(statuses)
+                .stream()
+                .filter(token -> token.getOfficeId() != null && token.getOfficeId() == officeId)
                 .map(token -> EligibleTokenDTO.builder()
                         .id(token.getId())
                         .tokenNumber(token.getTokenNumber())

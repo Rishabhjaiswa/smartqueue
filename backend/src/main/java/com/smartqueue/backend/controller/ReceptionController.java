@@ -6,10 +6,13 @@ import com.smartqueue.backend.dto.EligibleTokenDTO;
 import com.smartqueue.backend.dto.ReceptionOverviewDTO;
 import com.smartqueue.backend.dto.TokenResponse;
 import com.smartqueue.backend.entity.Doctor;
+import com.smartqueue.backend.entity.StaffUser;
 import com.smartqueue.backend.repository.DoctorRepository;
+import com.smartqueue.backend.repository.StaffUserRepository;
 import com.smartqueue.backend.service.DoctorQueueService;
 import com.smartqueue.backend.service.ReceptionService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -22,7 +25,16 @@ public class ReceptionController {
 
     private final ReceptionService receptionService;
     private final DoctorRepository doctorRepository;
+    private final StaffUserRepository staffUserRepository;
     private final DoctorQueueService doctorQueueService;
+
+    /** Resolve the caller's officeId from their JWT principal. Falls back to 1 if not found. */
+    private int callerOfficeId(Authentication auth) {
+        if (auth == null) return 1;
+        return staffUserRepository.findByUsername(auth.getName())
+                .map(u -> u.getOfficeId() != null ? u.getOfficeId() : 1)
+                .orElse(1);
+    }
 
     @PostMapping("/checkin")
     public TokenResponse checkIn(@RequestBody CheckInRequest request) {
@@ -33,8 +45,8 @@ public class ReceptionController {
         return receptionService.bookAppointment(request);
     }
     @GetMapping("/overview")
-    public ReceptionOverviewDTO getOverview() {
-        return receptionService.getOverview();
+    public ReceptionOverviewDTO getOverview(Authentication auth) {
+        return doctorQueueService.buildReceptionOverview(callerOfficeId(auth));
     }
     @PostMapping("/token/{tokenId}/noshow")
     public void markNoShow(@PathVariable Long tokenId) {
@@ -55,27 +67,47 @@ public class ReceptionController {
         return receptionService.reinstateNoShow(tokenId, reason);
     }
     @GetMapping("/doctors")
-    public List<Doctor> getDoctorsForReception() {
-        return doctorRepository.findAll();
+    public List<Doctor> getDoctorsForReception(Authentication auth) {
+        int officeId = callerOfficeId(auth);
+        List<Doctor> docs = doctorRepository.findByOfficeId(officeId);
+        // If nobody is assigned to this office yet, return empty list
+        // (do NOT fall back to all doctors — that caused the wrong-office bug)
+        return docs;
     }
 
     @GetMapping("/tokens/waiting")
-    public List<EligibleTokenDTO> getWaitingTokens() {
-        return receptionService.getEligibleTokens(List.of(TokenStatus.WAITING));
+    public List<EligibleTokenDTO> getWaitingTokens(Authentication auth) {
+        return receptionService.getEligibleTokensByOffice(
+                List.of(TokenStatus.WAITING), callerOfficeId(auth));
     }
 
     @GetMapping("/tokens/active")
-    public List<EligibleTokenDTO> getActiveTokens() {
-        return receptionService.getEligibleTokens(List.of(TokenStatus.WAITING, TokenStatus.CALLED, TokenStatus.IN_CONSULTATION));
+    public List<EligibleTokenDTO> getActiveTokens(Authentication auth) {
+        return receptionService.getEligibleTokensByOffice(
+                List.of(TokenStatus.WAITING, TokenStatus.CALLED, TokenStatus.IN_CONSULTATION),
+                callerOfficeId(auth));
     }
 
     @GetMapping("/tokens/reinstatable")
-    public List<EligibleTokenDTO> getReinstatableTokens() {
-        return receptionService.getEligibleTokens(List.of(TokenStatus.NO_SHOW, TokenStatus.EXPIRED));
+    public List<EligibleTokenDTO> getReinstatableTokens(Authentication auth) {
+        return receptionService.getEligibleTokensByOffice(
+                List.of(TokenStatus.NO_SHOW, TokenStatus.EXPIRED), callerOfficeId(auth));
     }
 
     @GetMapping("/display")
     public ReceptionOverviewDTO getDisplayBoard() {
-        return doctorQueueService.buildReceptionOverview();
+        return doctorQueueService.buildReceptionOverview(1);
+    }
+
+    /** Public endpoint — shows all offices for the lobby display board. */
+    @GetMapping("/display/all")
+    public List<ReceptionOverviewDTO> getAllOfficesDisplay() {
+        List<Integer> officeIds = doctorRepository.findDistinctOfficeIds();
+        if (officeIds.isEmpty()) {
+            officeIds = List.of(1);
+        }
+        return officeIds.stream()
+                .map(doctorQueueService::buildReceptionOverview)
+                .toList();
     }
 }

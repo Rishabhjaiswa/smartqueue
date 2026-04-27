@@ -18,7 +18,8 @@ COPY src ./src
 RUN mvn package -DskipTests -q
 
 # Extract layered JAR for better Docker cache utilisation
-RUN java -Djarmode=layertools -jar target/*.jar extract --destination target/extracted
+RUN rm -f target/*-plain.jar && \
+    java -Djarmode=layertools -jar target/*.jar extract --destination target/extracted
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM eclipse-temurin:21-jre-alpine AS runtime

@@ -9,6 +9,7 @@ public class StaffUserDTO {
     private Long id;
     private String username;
     private String role;
+    private Integer officeId;
     private Long doctorId;
     private String doctorName;
 }

@@ -22,7 +22,8 @@ public class StaffUser {
     private String password;
 
     @Column(name = "office_id", nullable = false)
-    private Integer officeId;
+    @Builder.Default
+    private Integer officeId = 1;
 
     @Column(nullable = false)
     private String role;

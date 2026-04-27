@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -19,6 +20,7 @@ import java.util.List;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
     @Value("${app.cors.allowed-origins:http://localhost:3000}")
@@ -41,6 +43,7 @@ public class SecurityConfig {
                                 "/telegram/webhook",
                                 "/ws/**", "/ws/info",
                                 "/api/reception/display",
+                                "/api/reception/display/all",
                                 "/actuator/**"
                         ).permitAll()
                         .requestMatchers("/api/reception/**")
@@ -79,10 +82,7 @@ public class SecurityConfig {
                 .filter(origin -> !origin.isBlank())
                 .toList();
 
-        config.setAllowedOriginPatterns(List.of(
-                "http://localhost:3000",
-                "https://smartqueue-frontend-theta.vercel.app"
-        ));
+        config.setAllowedOriginPatterns(originList);
         config.setAllowedMethods(java.util.List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(java.util.List.of("*"));
         config.setAllowCredentials(true);

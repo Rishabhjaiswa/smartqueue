@@ -55,13 +55,6 @@ public class SystemBootstrapInitializer implements CommandLineRunner {
             log.warn("Redis status: DISABLED (running in degraded mode)");
         }
 
-        System.out.println(
-                new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder()
-                        .matches(
-                                "admin@123",
-                                "$2a$10$VRlsBIhZCAsTiMZXRUAAje.01d647EwgbP/iBvQR7lggeyqzhHEoa"
-                        )
-        );
         if (!resetOnStartup) {
             seedDefaultsIfMissing();
             return;
@@ -74,60 +67,80 @@ public class SystemBootstrapInitializer implements CommandLineRunner {
     }
 
     private void seedDefaultsIfMissing() {
-        if (doctorRepository.count() == 0) {
-            doctorRepository.saveAll(List.of(
-                    Doctor.builder()
-                            .name("Dr. Sharma")
-                            .specialization("General Medicine")
-                            .roomNumber("101")
-                            .available(true)
-                            .avgConsultMins(7)
-                            .maxQueueSize(25)
-                            .build(),
-                    Doctor.builder()
-                            .name("Dr. Mehta")
-                            .specialization("Internal Medicine")
-                            .roomNumber("102")
-                            .available(true)
-                            .avgConsultMins(9)
-                            .maxQueueSize(25)
-                            .build(),
-                    Doctor.builder()
-                            .name("Dr. Iyer")
-                            .specialization("Family Medicine")
-                            .roomNumber("103")
-                            .available(true)
-                            .avgConsultMins(6)
-                            .maxQueueSize(25)
-                            .build()
-            ));
+        seedDoctors();
+        seedAdminUser();
+    }
+
+    // ─── Doctors ──────────────────────────────────────────────────────────────
+
+    private static final List<Object[]> DOCTOR_SEED = List.of(
+        new Object[]{"Dr. Aryan Sharma",   "CARDIOLOGY",  "101", 10, "doc.cardio"},
+        new Object[]{"Dr. Priya Mehta",    "PEDIATRICS",  "102", 10, "doc.pedia"},
+        new Object[]{"Dr. Sameer Khan",    "DERMATOLOGY", "103", 10, "doc.derm"},
+        new Object[]{"Dr. Anita Deshmukh", "ORTHOPEDICS", "104", 10, "doc.ortho"},
+        new Object[]{"Dr. Rahul Varma",    "GENERAL",     "105", 10, "doc.general"}
+    );
+
+    private void seedDoctors() {
+        for (Object[] row : DOCTOR_SEED) {
+            String name           = (String) row[0];
+            String specialization = (String) row[1];
+            String room           = (String) row[2];
+            int    avgMins        = (int)    row[3];
+            String username       = (String) row[4];
+
+            Doctor doctor = doctorRepository.findByName(name).orElseGet(() -> {
+                Doctor d = Doctor.builder()
+                        .name(name)
+                        .specialization(specialization)
+                        .roomNumber(room)
+                        .available(true)
+                        .avgConsultMins(avgMins)
+                        .maxQueueSize(25)
+                        .officeId(1)
+                        .build();
+                d = doctorRepository.save(d);
+                log.info("Seeded doctor: {} ({})", name, specialization);
+                return d;
+            });
+
+            staffUserRepository.findByUsername(username).orElseGet(() -> {
+                StaffUser su = StaffUser.builder()
+                        .username(username)
+                        .password(passwordEncoder.encode("SmartDoc@2026"))
+                        .role("DOCTOR")
+                        .officeId(1)
+                        .doctorId(doctor.getId())
+                        .build();
+                staffUserRepository.save(su);
+                log.info("Seeded staff account: {}", username);
+                return su;
+            });
         }
+    }
 
-        StaffUser admin = staffUserRepository.findByUsername("admin")
-                .orElse(null);
+    // ─── Admin ────────────────────────────────────────────────────────────────
 
-        if (admin == null) {
-            admin = StaffUser.builder()
+    private void seedAdminUser() {
+        staffUserRepository.findByUsername("admin").orElseGet(() -> {
+            StaffUser admin = StaffUser.builder()
                     .username("admin")
-                    .password(passwordEncoder.encode("admin@123"))
+                    .password(passwordEncoder.encode("Admin@SmartQueue"))
                     .role("ADMIN")
                     .officeId(1)
                     .doctorId(null)
                     .build();
-        } else {
-            admin.setPassword(passwordEncoder.encode("admin@123"));
-            admin.setRole("ADMIN");
-            admin.setOfficeId(1);
-            admin.setDoctorId(null);
-        }
-
-        staffUserRepository.save(admin);
-        log.info("ADMIN PASSWORD RESET TO admin@123");
+            staffUserRepository.save(admin);
+            log.info("Seeded admin user");
+            return admin;
+        });
     }
+
+    // ─── Redis helpers ────────────────────────────────────────────────────────
 
     private void clearRedisKeys(String pattern) {
         if (redisTemplate.isEmpty()) {
-            log.warn("Redis is disabled, skipping key clearance for: {}", pattern);
+            log.warn("Redis disabled, skipping key clearance: {}", pattern);
             return;
         }
         try {
@@ -136,7 +149,7 @@ public class SystemBootstrapInitializer implements CommandLineRunner {
                 redisTemplate.get().delete(keys);
             }
         } catch (Exception e) {
-            log.warn("Unable to clear Redis keys for pattern {}: {}", pattern, e.getMessage());
+            log.warn("Unable to clear Redis keys for {}: {}", pattern, e.getMessage());
         }
     }
 }

@@ -10,28 +10,19 @@ import java.util.regex.Pattern;
 /**
  * Fast, deterministic, zero-latency triage classifier.
  *
- * Extracted from AIService.fallbackKeywordParse() and the inline override
- * block in AIService.processMessage() into a first-class testable component.
- *
- * Design principles:
- *  - Pure function: same input always produces same output (no I/O, no state)
- *  - Sub-millisecond: runs on every request BEFORE deciding whether to call Ollama
- *  - High recall on emergencies: errs toward EMERGENCY/SENIOR to protect patient safety
+ * Tier 1 of the hybrid Rule-Agent triage pipeline.
+ * If confidence >= 0.85, skips BioMistral entirely (saves ~4-8s per request).
+ * Also used as the circuit-breaker fallback when BioMistral is unavailable.
  *
  * Confidence scoring:
  *  - 0.0 – 0.59 : unclear, send to LLM
  *  - 0.60 – 0.84: rule result is tentative, LLM enriches
- *  - 0.85 – 1.0 : high confidence, skip LLM (saves ~2-4s per request)
- *
- * Current integration:
- *  - AIService calls classify() first. If confidence >= 0.85, skips Ollama.
- *  - If Ollama circuit breaker is open, this result is used as the fallback.
+ *  - 0.85 – 1.0 : high confidence, skip LLM
  */
 @Component
 @Slf4j
 public class RuleBasedPreClassifier {
 
-    // Matches standalone 2-digit numbers in range 60–99 (senior age detection)
     private static final Pattern SENIOR_AGE_PATTERN =
             Pattern.compile("\\b([6-9][0-9])\\b");
 
@@ -43,13 +34,15 @@ public class RuleBasedPreClassifier {
         String lower = rawMessage.toLowerCase();
         ServiceType serviceType = ServiceType.OTHER;
         PriorityFlag priorityFlag = PriorityFlag.NORMAL;
+        String specialization = "GENERAL";
         int confidencePoints = 0;
 
-        // ── Priority detection (evaluated first; safety-critical) ──────────────
+        // ── Priority (safety-critical, evaluated first) ───────────────────────
         if (lower.contains("emergency") || lower.contains("urgent")
                 || lower.contains("critical") || lower.contains("chest pain")
                 || lower.contains("can't breathe") || lower.contains("cannot breathe")
-                || lower.contains("unconscious") || lower.contains("bleeding")) {
+                || lower.contains("unconscious") || lower.contains("bleeding")
+                || lower.contains("stroke")) {
             priorityFlag = PriorityFlag.EMERGENCY;
             confidencePoints += 45;
         } else if (lower.contains("senior") || lower.contains("elderly")
@@ -59,60 +52,79 @@ public class RuleBasedPreClassifier {
             confidencePoints += 25;
         }
 
-        // ── Service type detection ─────────────────────────────────────────────
+        // ── Service type ──────────────────────────────────────────────────────
         if (lower.contains("emergency")) {
             serviceType = ServiceType.EMERGENCY;
+            specialization = "CARDIOLOGY";    // emergencies default to cardiology triage
             confidencePoints += 40;
         } else if (lower.contains("follow") || lower.contains("follow-up")
                 || lower.contains("revisit") || lower.contains("review")) {
             serviceType = ServiceType.FOLLOW_UP;
-            confidencePoints += 40;
-        } else if (lower.contains("specialist") || lower.contains("referral")
-                || lower.contains("cardio") || lower.contains("ortho")
-                || lower.contains("neuro") || lower.contains("derma")) {
-            serviceType = ServiceType.SPECIALIST;
             confidencePoints += 40;
         } else if (lower.contains("lab") || lower.contains("test")
                 || lower.contains("blood") || lower.contains("urine")
                 || lower.contains("sample") || lower.contains("scan")) {
             serviceType = ServiceType.LAB;
             confidencePoints += 40;
+        } else if (lower.contains("specialist") || lower.contains("referral")) {
+            serviceType = ServiceType.SPECIALIST;
+            confidencePoints += 35;
         } else if (lower.contains("general") || lower.contains("check")
                 || lower.contains("consult") || lower.contains("doctor")
                 || lower.contains("fever") || lower.contains("cold")
-                || lower.contains("cough") || lower.contains("pain")) {
+                || lower.contains("cough") || lower.contains("fatigue")
+                || lower.contains("headache") || lower.contains("vomit")) {
             serviceType = ServiceType.GENERAL;
             confidencePoints += 35;
         }
 
-        // Cap at 1.0
+        // ── Specialization matrix (Tier 1 fast-path) ─────────────────────────
+        if (lower.contains("chest") || lower.contains("heart")
+                || lower.contains("palpitation") || lower.contains("hypertension")
+                || lower.contains("cardio")) {
+            specialization = "CARDIOLOGY";
+            confidencePoints += 10;
+        } else if (lower.contains("child") || lower.contains("baby")
+                || lower.contains("infant") || lower.contains("toddler")
+                || lower.contains("kid") || lower.contains("paediatric")
+                || lower.contains("pediatric") || lower.contains("vaccination")) {
+            specialization = "PEDIATRICS";
+            confidencePoints += 10;
+        } else if (lower.contains("skin") || lower.contains("rash")
+                || lower.contains("acne") || lower.contains("eczema")
+                || lower.contains("itching") || lower.contains("derma")) {
+            specialization = "DERMATOLOGY";
+            confidencePoints += 10;
+        } else if (lower.contains("bone") || lower.contains("joint")
+                || lower.contains("fracture") || lower.contains("back pain")
+                || lower.contains("knee") || lower.contains("shoulder")
+                || lower.contains("spine") || lower.contains("arthritis")
+                || lower.contains("ortho")) {
+            specialization = "ORTHOPEDICS";
+            confidencePoints += 10;
+        }
+
         double confidence = Math.min(1.0, confidencePoints / 100.0);
 
-        log.debug("Rule classifier: service={} priority={} confidence={} for message='{}'",
-                serviceType, priorityFlag, confidence, rawMessage);
+        log.debug("Rule classifier: service={} spec={} priority={} conf={} msg='{}'",
+                serviceType, specialization, priorityFlag, confidence, rawMessage);
 
-        return new ClassificationResult(serviceType, priorityFlag, confidence);
+        return new ClassificationResult(serviceType, priorityFlag, specialization, confidence);
     }
 
-    // ── Result record ──────────────────────────────────────────────────────────
+    // ── Result record ─────────────────────────────────────────────────────────
 
     public record ClassificationResult(
             ServiceType serviceType,
             PriorityFlag priorityFlag,
+            String suggestedSpecialization,
             double confidence
     ) {
-        /** Returns true if this result is authoritative enough to skip LLM. */
-        public boolean isHighConfidence() {
-            return confidence >= 0.85;
-        }
-
-        /** Returns true if service type is still unknown (needs LLM clarification). */
-        public boolean isUnclear() {
-            return serviceType == ServiceType.OTHER && confidence < 0.40;
-        }
+        public boolean isHighConfidence() { return confidence >= 0.85; }
+        public boolean isUnclear()        { return serviceType == ServiceType.OTHER && confidence < 0.40; }
 
         static ClassificationResult unclear() {
-            return new ClassificationResult(ServiceType.OTHER, PriorityFlag.NORMAL, 0.0);
+            return new ClassificationResult(ServiceType.OTHER, PriorityFlag.NORMAL, "GENERAL", 0.0);
         }
     }
 }

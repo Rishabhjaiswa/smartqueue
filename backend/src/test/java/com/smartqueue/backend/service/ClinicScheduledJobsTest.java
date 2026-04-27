@@ -3,6 +3,7 @@ package com.smartqueue.backend.service;
 import com.smartqueue.backend.entity.Token;
 import com.smartqueue.backend.enums.TokenStatus;
 import com.smartqueue.backend.lock.RedissonLockService;
+import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.TokenRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,7 +18,6 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.time.LocalDateTime;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -42,6 +42,7 @@ class ClinicScheduledJobsTest {
     @Mock private RedisTemplate<String, String> redisTemplate;
     @Mock private WebSocketBroadcastService broadcastService;
     @Mock private DoctorQueueService doctorQueueService;
+    @Mock private DoctorRepository doctorRepository;
     @Mock private RedissonLockService lockService;
     @Mock private ZSetOperations<String, String> zSetOps;
 
@@ -53,7 +54,7 @@ class ClinicScheduledJobsTest {
         meterRegistry = new SimpleMeterRegistry();
         jobs = new ClinicScheduledJobs(
                 tokenRepository, Optional.of(redisTemplate), broadcastService,
-                doctorQueueService, lockService, meterRegistry
+                doctorQueueService, doctorRepository, lockService, meterRegistry
         );
         // Inject @Value fields
         ReflectionTestUtils.setField(jobs, "noShowTimeoutMins", 10);
@@ -64,6 +65,10 @@ class ClinicScheduledJobsTest {
         ReflectionTestUtils.invokeMethod(jobs, "initMetrics");
 
         lenient().when(redisTemplate.opsForZSet()).thenReturn(zSetOps);
+        // Stub doctorRepository for officeId lookups added in multi-tenancy
+        lenient().when(doctorRepository.findById(anyLong())).thenReturn(Optional.empty());
+        // Stub buildReceptionOverview for officeId-scoped broadcasts
+        lenient().when(doctorQueueService.buildReceptionOverview(anyInt())).thenReturn(null);
 
         // Lock service: immediately execute the runnable (simulate winning the lock)
         lenient().doAnswer(inv -> {

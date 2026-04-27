@@ -19,4 +19,5 @@ public class CreateStaffRequest {
     private String specialization;
     private String roomNumber;
     private Integer avgConsultMins;
+    private Integer officeId;
 }

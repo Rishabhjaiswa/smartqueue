@@ -9,6 +9,7 @@ import java.util.List;
 @Builder
 public class ReceptionOverviewDTO {
 
+    private int officeId;
     private int totalDoctorsActive;
     private int totalPatientsWaiting;
     private List<DoctorSummary> doctors;

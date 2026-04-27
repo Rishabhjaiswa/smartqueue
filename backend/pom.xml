@@ -150,6 +150,13 @@
 			<artifactId>spring-boot-starter-aop</artifactId>
 		</dependency>
 
+		<!-- ── Phase 4: OpenPDF — local medical report generation ── -->
+		<dependency>
+			<groupId>com.github.librepdf</groupId>
+			<artifactId>openpdf</artifactId>
+			<version>1.3.43</version>
+		</dependency>
+
 	</dependencies>
 	<repositories>
 		<repository>

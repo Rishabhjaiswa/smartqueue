@@ -22,7 +22,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
  *     This is the fix for WebSocket fan-out across multiple JVM instances.
  */
 @Configuration
-@ConditionalOnProperty(name = "REDIS_URL")
+@ConditionalOnProperty(name = "spring.data.redis.url")
 public class RedisConfig {
 
     // ── 1. RedisTemplate (unchanged behaviour) ─────────────────────────────────

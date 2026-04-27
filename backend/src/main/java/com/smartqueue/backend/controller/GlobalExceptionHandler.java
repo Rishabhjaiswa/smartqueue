@@ -67,4 +67,29 @@ public class GlobalExceptionHandler {
         problem.setProperty("timestamp", Instant.now().toString());
         return problem;
     }
+
+    /**
+     * RuntimeException → 422 Unprocessable Entity.
+     *
+     * Catches business-logic errors like:
+     *  - "Clinic is currently closed for walk-in registrations"
+     *  - "Selected doctor is unavailable"
+     *  - "Selected doctor queue is full"
+     *
+     * Using 422 (not 500) so the frontend error interceptor does NOT treat
+     * this as an unexpected server failure or trigger false session-expiry paths.
+     */
+    @ExceptionHandler(RuntimeException.class)
+    public ProblemDetail handleRuntimeException(RuntimeException ex) {
+        log.warn("Business rule violation: {}", ex.getMessage());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                ex.getMessage()
+        );
+        problem.setType(URI.create("https://smartqueue.io/errors/business-rule"));
+        problem.setTitle("Request Cannot Be Processed");
+        problem.setProperty("timestamp", Instant.now().toString());
+        return problem;
+    }
 }

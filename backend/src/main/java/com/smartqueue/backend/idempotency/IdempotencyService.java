@@ -38,7 +38,8 @@ import java.util.Optional;
 public class IdempotencyService {
 
     private static final String PREFIX = "idem:";
-    private static final Duration DEFAULT_TTL = Duration.ofMinutes(10);
+    private static final Duration DEFAULT_TTL   = Duration.ofMinutes(10);
+    public  static final Duration CHECKIN_TTL   = Duration.ofSeconds(60);
 
     private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -87,5 +88,21 @@ public class IdempotencyService {
             log.warn("Failed to deserialise idempotency result for correlationId={}", correlationId);
             return null;
         }
+    }
+    /**
+     * Atomic SETNX guard — returns true only for the FIRST caller with this key.
+     * All subsequent callers within the TTL window return false immediately.
+     * Use this instead of exists()+store() to eliminate the TOCTOU race.
+     *
+     * @param key  idempotency key (e.g. "checkin:{hash}")
+     * @param ttl  how long to block duplicate requests
+     * @return true if this caller acquired the lock (proceed), false if duplicate
+     */
+    public boolean tryAcquire(String key, Duration ttl) {
+        checkRedisRequired("idempotency-tryAcquire");
+        if (redisTemplate.isEmpty()) return true; // Redis down → allow through
+        Boolean acquired = redisTemplate.get().opsForValue()
+                .setIfAbsent(PREFIX + key, "1", ttl);
+        return Boolean.TRUE.equals(acquired);
     }
 }

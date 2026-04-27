@@ -267,7 +267,7 @@ class RuleBasedPreClassifierTest {
         @DisplayName("isUnclear() true when OTHER + confidence < 0.40")
         void isUnclearWhenOtherAndLowConfidence() {
             var result = new RuleBasedPreClassifier.ClassificationResult(
-                    ServiceType.OTHER, PriorityFlag.NORMAL, 0.0);
+                    ServiceType.OTHER, PriorityFlag.NORMAL, null, 0.0);
             assertThat(result.isUnclear()).isTrue();
         }
 
@@ -275,7 +275,7 @@ class RuleBasedPreClassifierTest {
         @DisplayName("isUnclear() false when serviceType is known even at low confidence")
         void notUnclearWhenServiceTypeKnown() {
             var result = new RuleBasedPreClassifier.ClassificationResult(
-                    ServiceType.GENERAL, PriorityFlag.NORMAL, 0.35);
+                    ServiceType.GENERAL, PriorityFlag.NORMAL, null, 0.35);
             assertThat(result.isUnclear()).isFalse();
         }
 
@@ -283,7 +283,7 @@ class RuleBasedPreClassifierTest {
         @DisplayName("isHighConfidence() true at exactly 0.85")
         void highConfidenceAtBoundary() {
             var result = new RuleBasedPreClassifier.ClassificationResult(
-                    ServiceType.EMERGENCY, PriorityFlag.EMERGENCY, 0.85);
+                    ServiceType.EMERGENCY, PriorityFlag.EMERGENCY, null, 0.85);
             assertThat(result.isHighConfidence()).isTrue();
         }
 
@@ -291,7 +291,7 @@ class RuleBasedPreClassifierTest {
         @DisplayName("isHighConfidence() false just below 0.85")
         void notHighConfidenceJustBelowBoundary() {
             var result = new RuleBasedPreClassifier.ClassificationResult(
-                    ServiceType.FOLLOW_UP, PriorityFlag.NORMAL, 0.84);
+                    ServiceType.FOLLOW_UP, PriorityFlag.NORMAL, null, 0.84);
             assertThat(result.isHighConfidence()).isFalse();
         }
     }

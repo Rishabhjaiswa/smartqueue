@@ -18,4 +18,9 @@ public class TokenRequest {
     private String chiefComplaint;
     private Integer severityScore;
     private LocalDateTime appointmentScheduledTime;
+    private boolean requiresAssistance;
+    private String suggestedSpecialization;  // CARDIOLOGY, PEDIATRICS, DERMATOLOGY, ORTHOPEDICS, GENERAL
+
+    /** Phase 3: resolved patient ID — set internally by QueueService after persistPatient(). */
+    private Long patientId;
 }

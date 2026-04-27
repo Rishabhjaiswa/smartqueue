@@ -3,6 +3,7 @@ package com.smartqueue.backend.service;
 import com.smartqueue.backend.entity.Token;
 import com.smartqueue.backend.enums.TokenStatus;
 import com.smartqueue.backend.lock.RedissonLockService;
+import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.TokenRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -16,7 +17,6 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -37,6 +37,7 @@ public class ClinicScheduledJobs {
     private final Optional<RedisTemplate<String, String>> redisTemplate;
     private final WebSocketBroadcastService broadcastService;
     private final DoctorQueueService doctorQueueService;
+    private final DoctorRepository doctorRepository;
     private final RedissonLockService lockService;
     private final MeterRegistry meterRegistry;
 
@@ -143,6 +144,12 @@ public class ClinicScheduledJobs {
                         doctorQueueService.buildDoctorQueueDTO(token.getDoctorId())
                 );
 
+                int expireOfficeId = token.getOfficeId() != null ? token.getOfficeId() : 1;
+                broadcastService.broadcastReceptionOverview(
+                        expireOfficeId,
+                        doctorQueueService.buildReceptionOverview(expireOfficeId)
+                );
+
                 autoExpiredCounter.increment();
                 log.info("Auto-expired token {} (no-show timeout)", token.getTokenNumber());
             } catch (Exception e) {
@@ -198,6 +205,13 @@ public class ClinicScheduledJobs {
                         broadcastService.broadcastDoctorQueue(
                                 doctorId,
                                 doctorQueueService.buildDoctorQueueDTO(doctorId)
+                        );
+                        int officeId = doctorRepository.findById(doctorId)
+                                .map(d -> d.getOfficeId() != null ? d.getOfficeId() : 1)
+                                .orElse(1);
+                        broadcastService.broadcastReceptionOverview(
+                                officeId,
+                                doctorQueueService.buildReceptionOverview(officeId)
                         );
                     } catch (Exception e) {
                         log.warn("Broadcast after starvation boost failed for doctor {}: {}", doctorId, e.getMessage());

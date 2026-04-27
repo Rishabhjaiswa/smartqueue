@@ -6,6 +6,7 @@ import lombok.Data;
 public class IntentDTO {
     private String serviceType;
     private String priorityFlag;
+    private String suggestedSpecialization;   // e.g. CARDIOLOGY, PEDIATRICS, GENERAL
     private String language;
     private double confidence;
     private boolean clarificationNeeded;

@@ -12,6 +12,7 @@ import com.smartqueue.backend.lock.RedissonLockService;
 import com.smartqueue.backend.repository.DoctorRepository;
 import com.smartqueue.backend.repository.PatientRepository;
 import com.smartqueue.backend.repository.TokenRepository;
+import com.smartqueue.backend.service.ContinuityOfCareService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +43,7 @@ public class QueueService {
     private final MeterRegistry meterRegistry;
     private final PriorityEngine priorityEngine;
     private final DoctorQueueService doctorQueueService;
+    private final ContinuityOfCareService continuityOfCareService;
 
     private static final String QUEUE_KEY = "queue:doctor:";
 
@@ -94,6 +96,11 @@ public class QueueService {
             }
             tokenRepository.save(t);
 
+            // Phase 3: Update preferred doctor on completion
+            if (t.getPatient() != null) {
+                continuityOfCareService.updatePreferredDoctor(t.getPatient().getId());
+            }
+
             if (isRedisAvailable("completeToken", true)) {
                 redisTemplate.get().opsForZSet().remove(
                         QUEUE_KEY + t.getDoctorId(),
@@ -105,8 +112,10 @@ public class QueueService {
                     t.getDoctorId(),
                     doctorQueueService.buildDoctorQueueDTO(t.getDoctorId())
             );
+            int completeTokenOfficeId = t.getOfficeId() != null ? t.getOfficeId() : 1;
             broadcastService.broadcastReceptionOverview(
-                    doctorQueueService.buildReceptionOverview()
+                    completeTokenOfficeId,
+                    doctorQueueService.buildReceptionOverview(completeTokenOfficeId)
             );
         });
     }
@@ -140,8 +149,10 @@ public class QueueService {
                 token.getDoctorId(),
                 doctorQueueService.buildDoctorQueueDTO(token.getDoctorId())
         );
+        int cancelOfficeId = token.getOfficeId() != null ? token.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                doctorQueueService.buildReceptionOverview()
+                cancelOfficeId,
+                doctorQueueService.buildReceptionOverview(cancelOfficeId)
         );
     }
 
@@ -174,8 +185,10 @@ public class QueueService {
                 token.getDoctorId(),
                 doctorQueueService.buildDoctorQueueDTO(token.getDoctorId())// or call service
         );
+        int noShowOfficeId = token.getOfficeId() != null ? token.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                doctorQueueService.buildReceptionOverview()
+                noShowOfficeId,
+                doctorQueueService.buildReceptionOverview(noShowOfficeId)
         );
     }
 
@@ -195,6 +208,11 @@ public class QueueService {
     }
 
     private TokenResponse generateTokenLocked(TokenRequest request, Patient persistedPatient) {
+
+        // Phase 3: stamp resolved patientId so assignDoctor can use continuity routing
+        if (persistedPatient != null) {
+            request.setPatientId(persistedPatient.getId());
+        }
 
         // ✅ ACTIVE TOKEN CHECK — only for identified patients
         if (persistedPatient != null) {
@@ -257,9 +275,12 @@ public class QueueService {
                                 ? request.getSeverityScore()
                                 : 0
                 )
+                .requiresAssistance(request.isRequiresAssistance())
                 .appointmentScheduledTime(request.getAppointmentScheduledTime())
                 .status(TokenStatus.WAITING)
-                .officeId(request.getOfficeId())
+                .officeId(request.getOfficeId() != null
+                        ? request.getOfficeId()
+                        : (doctor.getOfficeId() != null ? doctor.getOfficeId() : 1))
                 .createdAt(LocalDateTime.now())
                 .build();
 
@@ -273,6 +294,9 @@ public class QueueService {
         token.setLastScoreUpdate(LocalDateTime.now());
 
         tokenRepository.save(token);
+
+        // Phase 3: Record assignment in history
+        continuityOfCareService.recordAssignment(token, doctor, persistedPatient);
 
         validateDoctorAvailability(doctor);
 
@@ -298,8 +322,10 @@ public class QueueService {
                 doctor.getId(),
                 doctorQueueService.buildDoctorQueueDTO(doctor.getId())
         );
+        int tokenOfficeId = request.getOfficeId() != null ? request.getOfficeId() : 1;
         broadcastService.broadcastReceptionOverview(
-                doctorQueueService.buildReceptionOverview()
+                tokenOfficeId,
+                doctorQueueService.buildReceptionOverview(tokenOfficeId)
         );
 
         Counter.builder("smartqueue.token.generated")
@@ -322,6 +348,7 @@ public class QueueService {
 
     private Doctor assignDoctor(TokenRequest request) {
 
+        // ── 1. Explicit doctorId override (highest priority) ──────────────
         if (request.getDoctorId() != null) {
             Doctor requestedDoctor = doctorRepository.findById(request.getDoctorId())
                     .orElseThrow(() -> new RuntimeException("Doctor not found"));
@@ -329,31 +356,65 @@ public class QueueService {
             return requestedDoctor;
         }
 
-        List<Doctor> available = doctorRepository.findByAvailableTrue()
+        // ── 2. Specialization-based routing (Phase 1 + Phase 3) ────────────
+        String spec = request.getSuggestedSpecialization();
+        if (spec != null && !spec.isBlank()) {
+            List<Doctor> specialists = (request.getOfficeId() != null
+                    ? doctorRepository.findBySpecializationAndAvailableTrueAndOfficeId(
+                            spec.toUpperCase(), request.getOfficeId())
+                    : doctorRepository.findBySpecializationAndAvailableTrue(spec.toUpperCase()))
+                    .stream()
+                    .filter(d -> d.getMaxQueueSize() == null ||
+                            getQueueSize(d.getId()) < d.getMaxQueueSize())
+                    .toList();
+
+            if (!specialists.isEmpty()) {
+                // Phase 3 sub-priority: prefer the patient's last specialist in this pool
+                // (only if we have a persisted patient)
+                Doctor preferred = null;
+                if (request.getPatientId() != null) {
+                    preferred = continuityOfCareService
+                            .suggestDoctorForPatient(request.getPatientId())
+                            .filter(specialists::contains)
+                            .orElse(null);
+                }
+
+                if (preferred != null) {
+                    log.info("Continuity of care: routing patient={} to preferred doctor={} ({})",
+                            request.getPatientId(), preferred.getId(), preferred.getName());
+                    return preferred;
+                }
+
+                // No continuity preference — pick least-loaded specialist
+                return leastLoadedDoctor(specialists);
+            }
+            // No available specialists in that department → fall through to generic
+            log.warn("No available {} specialist — falling back to generic pool", spec);
+        }
+
+        // ── 3. Generic least-loaded selection ─────────────────────────────
+        List<Doctor> available = (request.getOfficeId() != null
+                ? doctorRepository.findByAvailableTrueAndOfficeId(request.getOfficeId())
+                : doctorRepository.findByAvailableTrue())
                 .stream()
-                .filter(doctor -> {
-                    Long queueSize = isRedisAvailable("calculateMetrics", false) ? Optional.ofNullable(
-                            redisTemplate.get().opsForZSet().size(QUEUE_KEY + doctor.getId())
-                    ).orElse(0L) : 0L;
-                    return doctor.getMaxQueueSize() == null || queueSize < doctor.getMaxQueueSize();
-                })
+                .filter(d -> d.getMaxQueueSize() == null || getQueueSize(d.getId()) < d.getMaxQueueSize())
                 .toList();
 
-        return available.stream()
-                .min(Comparator.comparingLong(doctor -> {
+        return leastLoadedDoctor(available);
+    }
 
-                    Long queueSize = isRedisAvailable("calculateMetrics", false) ? Optional.ofNullable(
-                            redisTemplate.get().opsForZSet()
-                                    .size(QUEUE_KEY + doctor.getId())
-                    ).orElse(0L) : 0L;
+    private long getQueueSize(Long doctorId) {
+        return isRedisAvailable("getQueueSize", false)
+                ? Optional.ofNullable(redisTemplate.get().opsForZSet().size(QUEUE_KEY + doctorId)).orElse(0L)
+                : 0L;
+    }
 
-                    int avgTime = Optional.ofNullable(doctor.getAvgConsultMins())
-                            .orElse(10);
-
-                    long estimatedWait = queueSize * avgTime;
-
-                    return queueSize + (estimatedWait / avgTime);
-
+    private Doctor leastLoadedDoctor(List<Doctor> pool) {
+        return pool.stream()
+                .min(Comparator.comparingLong(d -> {
+                    long qs      = getQueueSize(d.getId());
+                    int  avgTime = Optional.ofNullable(d.getAvgConsultMins()).orElse(10);
+                    return qs + (qs * avgTime / avgTime);
                 }))
                 .orElseThrow(() -> new RuntimeException("No doctors available"));
     }
@@ -496,25 +557,61 @@ public class QueueService {
         return baseScore;
     }
 
+    /**
+     * Phase 2 — Family Identification (Phone + Name dual-verification).
+     *
+     * Lookup hierarchy:
+     *  1. patient.id already set  → already persisted, return as-is
+     *  2. phone provided          → find all patients with that phone
+     *     a. name match (case-insensitive) → return existing record
+     *     b. name is new                  → create new profile, same phone
+     *  3. no phone                → generate temp phone, save as anonymous
+     */
     private Patient persistPatient(Patient patient) {
-        if (patient == null) {
-            return null;
-        }
+        if (patient == null) return null;
 
-        if (patient.getId() != null) {
-            return patient;
-        }
+        // Already a persisted entity
+        if (patient.getId() != null) return patient;
 
-        if (patient.getPhone() == null || patient.getPhone().isBlank()) {
-            patient.setPhone(String.valueOf(System.currentTimeMillis()).substring(3, 13));
+        String phone = (patient.getPhone() != null && !patient.getPhone().isBlank())
+                ? patient.getPhone().trim()
+                : null;
+
+        if (phone != null) {
+            // ── Step 1: Exact phone + name match → return existing patient ──
+            Optional<Patient> exactMatch = patientRepository
+                    .findByPhoneAndNameIgnoreCase(phone, patient.getName().trim());
+            if (exactMatch.isPresent()) {
+                log.info("Patient identified: id={} name={} (phone match)",
+                        exactMatch.get().getId(), exactMatch.get().getName());
+                return exactMatch.get();
+            }
+
+            // ── Step 2: Phone exists but name is new → new family member ────
+            List<Patient> samePhone = patientRepository.findByPhone(phone);
+            if (!samePhone.isEmpty()) {
+                log.info("New family member on existing phone {}: name={}",
+                        phone, patient.getName());
+            }
+
+            // Fall through: create new profile (new patient OR new family member)
+        } else {
+            // No phone provided — generate a temporary identifier
+            patient.setPhone("T" + System.currentTimeMillis());
         }
 
         if (patient.getAge() == null || patient.getAge() <= 0) {
             patient.setAge(30);
         }
+        if (patient.getCreatedAt() == null) {
+            patient.setCreatedAt(LocalDateTime.now());
+        }
 
-        return patientRepository.save(patient);
+        Patient saved = patientRepository.save(patient);
+        log.info("New patient created: id={} name={} phone={}", saved.getId(), saved.getName(), saved.getPhone());
+        return saved;
     }
+
 
     private int resolvePatientAge(Patient patient) {
         if (patient == null || patient.getAge() == null || patient.getAge() <= 0) {

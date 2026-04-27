@@ -17,10 +17,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 @Configuration
-@ConditionalOnProperty(name = "REDIS_URL")
+@ConditionalOnProperty(name = "spring.data.redis.url")
 public class RedissonConfig {
 
-    @Value("${REDIS_URL}")
+    @Value("${spring.data.redis.url}")
     private String redisUrl;
 
     @Value("${REDIS_PASSWORD:}")

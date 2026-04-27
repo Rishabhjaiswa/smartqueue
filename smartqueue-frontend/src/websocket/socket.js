@@ -9,14 +9,14 @@ if (!rawBase) {
 }
 const SOCKET_BASE = rawBase.replace(/\/$/, "");
 
-export const connectSocket = (doctorId, onMessage) => {
+export const connectSocket = (doctorId, onMessage, officeId = 1) => {
     if (stompClient) {
         stompClient.deactivate();
     }
 
     const socket = new SockJS(`${SOCKET_BASE}/ws`);
     const topic = doctorId === "reception"
-        ? "/topic/reception/overview"
+        ? `/topic/reception/overview/${officeId}`
         : `/topic/doctor/${doctorId}`;
 
     stompClient = new Client({
@@ -25,7 +25,7 @@ export const connectSocket = (doctorId, onMessage) => {
         reconnectDelay: 5000,
 
         onConnect: () => {
-            console.log("✅ WebSocket Connected");
+            console.log("✅ WebSocket Connected to", topic);
 
             stompClient.subscribe(topic, (message) => {
                 try {

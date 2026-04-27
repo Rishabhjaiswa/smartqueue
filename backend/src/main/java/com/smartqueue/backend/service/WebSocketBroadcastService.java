@@ -48,9 +48,9 @@ public class WebSocketBroadcastService {
         publish(WS_PREFIX + "doctor:" + doctorId + ":current", tokenNumber);
     }
 
-    /** Pushes a reception dashboard snapshot to all connected reception clients. */
-    public void broadcastReceptionOverview(ReceptionOverviewDTO dto) {
-        publish(WS_PREFIX + "reception:overview", dto);
+    /** Pushes a reception dashboard snapshot scoped to a specific office. */
+    public void broadcastReceptionOverview(Integer officeId, ReceptionOverviewDTO dto) {
+        publish(WS_PREFIX + "reception:overview:" + officeId, dto);
     }
 
     /** Sends a targeted notification to a single patient via user-destination. */

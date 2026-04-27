@@ -12,8 +12,10 @@ import java.time.ZoneOffset;
 @Component
 public class PriorityEngine {
 
-    private static final long PRIORITY_POINT_UNIT = 10_000L;
-    private static final long QUEUE_LOAD_UNIT = 30_000L;
+    private static final long PRIORITY_POINT_UNIT  = 10_000L;
+    private static final long QUEUE_LOAD_UNIT       = 30_000L;
+    /** Assistance boost: subtracts ~50 M from score, overriding all other factors. */
+    private static final long ASSISTANCE_BOOST      = 50_000_000L;
 
     public long computeScore(Token token, int doctorQueueSize, int patientAge) {
         long baseScore = token.getCreatedAt()
@@ -30,9 +32,16 @@ public class PriorityEngine {
                         + appointmentAdjustment(token)
                         + visitTypeAdjustment(token.getVisitType());
 
-        return baseScore
+        long score = baseScore
                 - (weightedPriority * PRIORITY_POINT_UNIT)
                 + (doctorQueueSize * QUEUE_LOAD_UNIT);
+
+        // requiresAssistance overrides all other factors — guaranteed near-front position.
+        if (token.isRequiresAssistance()) {
+            score -= ASSISTANCE_BOOST;
+        }
+
+        return score;
     }
 
     private int ageFactor(int age) {

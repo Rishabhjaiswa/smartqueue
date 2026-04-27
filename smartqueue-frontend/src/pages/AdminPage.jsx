@@ -26,7 +26,8 @@ export default function AdminPage() {
         doctorName: "",
         specialization: "",
         roomNumber: "",
-        avgConsultMins: ""
+        avgConsultMins: "",
+        officeId: "1"
     });
 
     useEffect(() => {
@@ -50,7 +51,7 @@ export default function AdminPage() {
             setAuditLogs(auditRes.data || []);
             setError("");
         } catch (err) {
-            setError(err?.response?.data?.message || "Unable to load admin data.");
+            setError(err?.response?.data?.detail || err?.response?.data?.message || "Unable to load admin data.");
         } finally {
             setLoading(false);
         }
@@ -84,6 +85,7 @@ export default function AdminPage() {
                 username: form.username.trim(),
                 password: form.password,
                 role: form.role,
+                officeId: Number(form.officeId) || 1,
                 doctorId: form.role === "DOCTOR" && !form.createNewDoctor ? Number(form.doctorId) : null,
                 doctorName: form.role === "DOCTOR" && form.createNewDoctor ? form.doctorName.trim() : null,
                 specialization: form.role === "DOCTOR" && form.createNewDoctor ? form.specialization.trim() : null,
@@ -101,11 +103,12 @@ export default function AdminPage() {
                 doctorName: "",
                 specialization: "",
                 roomNumber: "",
-                avgConsultMins: ""
+                avgConsultMins: "",
+                officeId: "1"
             });
             setMessage("Staff user created.");
         } catch (err) {
-            setError(err?.response?.data?.message || "Unable to create staff user.");
+            setError(err?.response?.data?.detail || err?.response?.data?.message || "Unable to create staff user.");
         } finally {
             setSubmitting(false);
         }
@@ -127,7 +130,7 @@ export default function AdminPage() {
             const selectedUser = staff.find((item) => String(item.id) === String(resetPasswordForm.staffUserId));
             setMessage(`Password reset successfully${selectedUser ? ` for ${selectedUser.username}` : ""}.`);
         } catch (err) {
-            setError(err?.response?.data?.message || "Unable to reset password.");
+            setError(err?.response?.data?.detail || err?.response?.data?.message || "Unable to reset password.");
         } finally {
             setSubmitting(false);
         }
@@ -182,6 +185,18 @@ export default function AdminPage() {
                                     {showCreatePassword ? "Hide" : "Show"}
                                 </button>
                             </div>
+                        </div>
+
+                        <div style={field}>
+                            <label style={label}>Office ID</label>
+                            <input
+                                style={input}
+                                type="number"
+                                min="1"
+                                value={form.officeId}
+                                onChange={(e) => setForm({ ...form, officeId: e.target.value })}
+                                placeholder="1"
+                            />
                         </div>
 
                         <div style={field}>
@@ -300,6 +315,7 @@ export default function AdminPage() {
                                 <tr>
                                     <th style={th}>Username</th>
                                     <th style={th}>Role</th>
+                                    <th style={th}>Office</th>
                                     <th style={th}>Doctor</th>
                                 </tr>
                                 </thead>
@@ -308,6 +324,7 @@ export default function AdminPage() {
                                     <tr key={item.id}>
                                         <td style={td}>{item.username}</td>
                                         <td style={td}>{item.role}</td>
+                                        <td style={td}>{item.officeId ?? 1}</td>
                                         <td style={td}>{item.doctorName || "—"}</td>
                                     </tr>
                                 ))}

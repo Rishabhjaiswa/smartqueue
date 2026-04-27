@@ -54,40 +54,41 @@ public class AIService {
     private static final String CB_NAME = "ollama";
 
     private static final String SYSTEM_PROMPT = """
-        You are a medical queue assistant for a clinic.
-        
-        YOUR ONLY JOB: Read the patient's message and output a single JSON object.
-        
+        You are BioMistral, a medical AI assistant integrated into a clinic queue system.
+
+        YOUR ONLY JOB: Analyze the patient's symptoms and output a single JSON object.
+
         STRICT RULES:
-        - Output ONLY raw JSON
-        - No explanation
-        - No markdown
-        - No extra text
-        
+        - Output ONLY raw JSON — no markdown, no explanation, no extra text.
+        - Base specialization on clinical symptom patterns, not vague keywords.
+
         JSON schema:
         {
           "serviceType": "",
+          "suggestedSpecialization": "",
           "priorityFlag": "",
           "language": "",
-          "confidence": 0,
+          "confidence": 0.0,
           "clarificationNeeded": false,
           "clarificationQuestion": "",
           "replyMessage": ""
         }
-        
-        Service mapping:
-        - general → GENERAL
-        - follow up → FOLLOW_UP
-        - specialist → SPECIALIST
-        - emergency → EMERGENCY
-        - lab/test → LAB
-        - unclear → OTHER (clarificationNeeded: true)
-        
-        Priority:
-        - emergency/urgent → EMERGENCY
-        - senior/elderly/60+ → SENIOR
-        - else → NORMAL
-        
+
+        serviceType values: GENERAL | FOLLOW_UP | SPECIALIST | EMERGENCY | LAB | OTHER
+
+        suggestedSpecialization mapping (pick exactly one):
+        - CARDIOLOGY   : chest pain, palpitations, shortness of breath, hypertension, heart
+        - PEDIATRICS   : child, infant, baby, toddler, kid, fever in child, vaccination
+        - DERMATOLOGY  : rash, skin, acne, eczema, psoriasis, itching, lesion, wound
+        - ORTHOPEDICS  : bone, joint, fracture, back pain, knee, shoulder, spine, arthritis
+        - GENERAL      : fever, cold, cough, headache, fatigue, vomiting, unclear, general checkup
+
+        priorityFlag values:
+        - EMERGENCY : chest pain, unconscious, severe bleeding, can't breathe, stroke
+        - SENIOR    : patient mentions age 60+, elderly, senior
+        - NORMAL    : all other cases
+
+        If unclear → set serviceType to OTHER and clarificationNeeded to true.
         Return ONLY JSON.
         """;
 
@@ -109,10 +110,10 @@ public class AIService {
         }
 
         if (preResult.confidence() >= 0.85) {
-            log.info("Rule classifier high-confidence hit ({}) — skipping Ollama",
+            log.info("Rule classifier high-confidence hit ({}) — skipping BioMistral",
                     preResult.confidence());
             return buildTokenResponse(preResult.serviceType(), preResult.priorityFlag(),
-                    request.getMessage(), officeId, null, patient);
+                    preResult.suggestedSpecialization(), request.getMessage(), officeId, null, patient);
         }
 
         // ── Step 2: Ollama LLM (with circuit breaker + fallback) ─────────────
@@ -180,8 +181,8 @@ public class AIService {
             return buildFromPreClassifier(preResult, request.getMessage(), officeId, patient);
         }
 
-        return buildTokenResponse(serviceType, priorityFlag, request.getMessage(), officeId,
-                intent.getReplyMessage(), patient);
+        return buildTokenResponse(serviceType, priorityFlag, intent.getSuggestedSpecialization(),
+                request.getMessage(), officeId, intent.getReplyMessage(), patient);
     }
 
     /**
@@ -218,10 +219,12 @@ public class AIService {
                     .clarificationQuestion(clarificationQ)
                     .build();
         }
-        return buildTokenResponse(result.serviceType(), result.priorityFlag(), rawMessage, officeId, null, patient);
+        return buildTokenResponse(result.serviceType(), result.priorityFlag(), result.suggestedSpecialization(),
+                rawMessage, officeId, null, patient);
     }
 
     private ChatResponse buildTokenResponse(ServiceType serviceType, PriorityFlag priorityFlag,
+                                             String suggestedSpecialization,
                                              String rawMessage, int officeId, String ollamaReply, Patient patient) {
         TokenRequest tokenRequest = new TokenRequest();
         tokenRequest.setServiceType(serviceType);
@@ -229,6 +232,7 @@ public class AIService {
         tokenRequest.setOfficeId(officeId);
         tokenRequest.setSeverityScore(defaultSeverity(priorityFlag));
         tokenRequest.setChiefComplaint(rawMessage);
+        tokenRequest.setSuggestedSpecialization(suggestedSpecialization);
 
         TokenResponse tokenResponse = queueService.generateToken(tokenRequest, patient);
 
