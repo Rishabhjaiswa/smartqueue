@@ -26,7 +26,7 @@ You can access the live, deployed version of the project here:
 | Portal | Live Link | Demo Credentials |
 |--------|-----------|------------------|
 | **Admin Portal** | [https://smartqueue-frontend-theta.vercel.app/admin](https://smartqueue-frontend-theta.vercel.app/admin) | User: `admin` <br> Pass: `admin@123` |
-| **Doctor Portal** | [https://smartqueue-frontend-theta.vercel.app/doctor](https://smartqueue-frontend-theta.vercel.app/doctor) | User: `drsharm` <br> Pass: `sharma@123` |
+| **Doctor Portal** | [https://smartqueue-frontend-theta.vercel.app/doctor](https://smartqueue-frontend-theta.vercel.app/doctor) | Dr. Sharma: `drsharm` / `sharma@123`<br>Dr. Mehta: `drmehta` / `mehta@123`<br>Dr. Iyer: `driyer` / `iyer@123` |
 | **Reception Portal** | [https://smartqueue-frontend-theta.vercel.app/reception](https://smartqueue-frontend-theta.vercel.app/reception) | User: `reception` <br> Pass: `reception@123` |
 | **Display Board** | [https://smartqueue-frontend-theta.vercel.app/display](https://smartqueue-frontend-theta.vercel.app/display) | *No login required* |
 
